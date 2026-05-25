@@ -1,0 +1,129 @@
+version: '3.9'
+
+# ============================================================
+# Sosa Connect — Docker Compose (Development + Production)
+# ============================================================
+
+services:
+  # ── API Server ──────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: sosa_api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sosa_user}:${POSTGRES_PASSWORD:-sosa_password}@postgres:5432/${POSTGRES_DB:-sosa_connect}?schema=public
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      ACTIVE_PAYMENT_GATEWAY: ${ACTIVE_PAYMENT_GATEWAY:-stripe}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_CURRENCY: ${STRIPE_CURRENCY:-usd}
+      PAYNOW_INTEGRATION_ID: ${PAYNOW_INTEGRATION_ID:-}
+      PAYNOW_INTEGRATION_KEY: ${PAYNOW_INTEGRATION_KEY:-}
+      PAYNOW_RESULT_URL: ${PAYNOW_RESULT_URL:-}
+      PAYNOW_RETURN_URL: ${PAYNOW_RETURN_URL:-}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-sosa_minio_access}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-sosa_minio_secret}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-sosa-connect}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - sosa_network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── PostgreSQL + PostGIS ─────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: sosa_postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sosa_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sosa_password}
+      POSTGRES_DB: ${POSTGRES_DB:-sosa_connect}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./prisma/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - sosa_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sosa_user} -d ${POSTGRES_DB:-sosa_connect}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO (Object Storage) ───────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: sosa_minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-sosa_minio_access}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-sosa_minio_secret}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - sosa_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Adminer (DB UI — dev only) ───────────────────────────
+  adminer:
+    image: adminer:latest
+    container_name: sosa_adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      - postgres
+    networks:
+      - sosa_network
+    profiles:
+      - dev
+
+# ── Volumes ──────────────────────────────────────────────
+volumes:
+  postgres_data:
+    name: sosa_postgres_data
+  minio_data:
+    name: sosa_minio_data
+
+# ── Networks ─────────────────────────────────────────────
+networks:
+  sosa_network:
+    name: sosa_network
+    driver: bridge
