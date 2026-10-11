@@ -32,7 +32,11 @@ export class UsersRepository {
 
     return prisma.$transaction(async (tx) => {
       if (phone) {
-        await tx.user.update({ where: { id: userId }, data: { phone } });
+        const current = await tx.user.findUnique({ where: { id: userId }, select: { phone: true } });
+        if (current?.phone !== phone) {
+          // A new number must be verified again via /auth/phone/verify
+          await tx.user.update({ where: { id: userId }, data: { phone, phoneVerified: false } });
+        }
       }
       return tx.userProfile.upsert({
         where: { userId },

@@ -2,6 +2,7 @@ import prisma from '../../lib/prisma';
 import { kmToMetres } from '../../lib/geo';
 import { OnboardProviderDto, UpdateProviderDto, NearbyQueryDto } from './providers.schema';
 import { ApprovalStatus, ServiceCategory } from '@prisma/client';
+import { publicProviderSelect } from '../../lib/serializers';
 
 export class ProvidersRepository {
   async create(userId: string, dto: OnboardProviderDto) {
@@ -37,13 +38,12 @@ export class ProvidersRepository {
   }
 
   async findById(id: string) {
-    return prisma.provider.findUnique({
-      where: { id },
-      include: {
-        services: { where: { isActive: true } },
-        user: { select: { email: true, phone: true } },
-      },
-    });
+    return prisma.provider.findUnique({ where: { id } });
+  }
+
+  /** Store page data — no owner contact details */
+  async findPublicById(id: string) {
+    return prisma.provider.findUnique({ where: { id }, select: publicProviderSelect });
   }
 
   async update(id: string, dto: UpdateProviderDto) {
@@ -59,6 +59,14 @@ export class ProvidersRepository {
         website: dto.website,
         lat: dto.lat,
         lng: dto.lng,
+        isOpen: dto.isOpen,
+        openingHours: dto.openingHours,
+        deliveryFee: dto.deliveryFee,
+        minOrder: dto.minOrder,
+        deliveryRadiusKm: dto.deliveryRadiusKm,
+        estimatedPrepMinutes: dto.estimatedPrepMinutes,
+        offersDelivery: dto.offersDelivery,
+        offersCollection: dto.offersCollection,
       },
     });
     if (dto.lat && dto.lng) {
@@ -155,7 +163,13 @@ export class ProvidersRepository {
       ];
     }
     const [data, total] = await Promise.all([
-      prisma.provider.findMany({ where, skip: opts.skip, take: opts.take, orderBy: { createdAt: 'desc' } }),
+      prisma.provider.findMany({
+        where,
+        skip: opts.skip,
+        take: opts.take,
+        orderBy: { createdAt: 'desc' },
+        include: { user: { select: { email: true } } },
+      }),
       prisma.provider.count({ where }),
     ]);
     return { data, total };

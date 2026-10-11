@@ -2,7 +2,8 @@ import { createApp } from './app';
 import { env } from './config/env';
 import { logger } from './lib/logger';
 import prisma from './lib/prisma';
-import * as Minio from 'minio';
+import { ensurePublicBucket } from './lib/storage';
+import { ordersService } from './modules/orders/orders.service';
 
 async function bootstrap() {
   // ── Database connectivity check ───────────────────────────
@@ -14,27 +15,27 @@ async function bootstrap() {
     process.exit(1);
   }
 
-  // ── MinIO bucket initialisation ───────────────────────────
-  try {
-    const minioClient = new Minio.Client({
-      endPoint: env.MINIO_ENDPOINT,
-      port: env.MINIO_PORT,
-      useSSL: env.MINIO_USE_SSL === 'true',
-      accessKey: env.MINIO_ACCESS_KEY,
-      secretKey: env.MINIO_SECRET_KEY,
-    });
-
-    const bucketExists = await minioClient.bucketExists(env.MINIO_BUCKET_NAME);
-    if (!bucketExists) {
-      await minioClient.makeBucket(env.MINIO_BUCKET_NAME, 'us-east-1');
-      logger.info(`✅ MinIO bucket "${env.MINIO_BUCKET_NAME}" created`);
-    } else {
+  // ── Object storage ─────────────────────────────────────────
+  if (env.STORAGE_DRIVER === 'minio') {
+    try {
+      await ensurePublicBucket();
       logger.info(`✅ MinIO bucket "${env.MINIO_BUCKET_NAME}" ready`);
+    } catch (err) {
+      // Non-fatal — app can run without MinIO (file uploads will fail gracefully)
+      logger.warn('⚠️  MinIO not available — file uploads disabled', { err });
     }
-  } catch (err) {
-    // Non-fatal — app can run without MinIO (file uploads will fail gracefully)
-    logger.warn('⚠️  MinIO not available — file uploads disabled', { err });
+  } else {
+    logger.info(`📁 Uploads stored locally in ./${env.UPLOAD_DIR}`);
   }
+
+  // ── Background jobs ───────────────────────────────────────
+  // Cancel checkouts that were never paid, releasing their stock
+  const expiryTimer = setInterval(() => {
+    ordersService.expireUnpaidOrders()
+      .then((n) => { if (n) logger.info(`Expired ${n} unpaid order(s)`); })
+      .catch((err) => logger.error('Unpaid order expiry failed', { err }));
+  }, 60_000);
+  expiryTimer.unref();
 
   // ── Start HTTP server ─────────────────────────────────────
   const app = createApp();
@@ -47,6 +48,7 @@ async function bootstrap() {
   // ── Graceful shutdown ─────────────────────────────────────
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received — gracefully shutting down`);
+    clearInterval(expiryTimer);
     server.close(async () => {
       await prisma.$disconnect();
       logger.info('Database disconnected. Bye 👋');

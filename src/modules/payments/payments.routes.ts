@@ -6,28 +6,35 @@ import { validate } from '../../middleware/validate.middleware';
 import { auditLog } from '../../middleware/audit.middleware';
 import { z } from 'zod';
 import express from 'express';
+import { zwMobile } from '../auth/auth.schema';
 
 const router = Router();
 
 const initiateSchema = z.object({
   orderId: z.string().uuid(),
+  paymentMethod: z.enum(['ECOCASH', 'ONEMONEY', 'CARD', 'CASH']).optional(),
+  paymentPhone: zwMobile.optional(),
 });
 
-/**
- * POST /payments/webhook
- * Must use raw body parser — registered BEFORE express.json() in app.ts.
- * Stripe webhook signature verification requires the raw Buffer.
- */
+// Stripe webhook — needs the raw body for signature verification
 router.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
   paymentsController.webhook.bind(paymentsController),
 );
 
-// All routes below require authentication
-router.use(authenticate);
+// Paynow result URL — form-encoded, verified by hash
+router.post(
+  '/paynow/result',
+  express.urlencoded({ extended: false, limit: '20kb' }),
+  paymentsController.paynowResult.bind(paymentsController),
+);
 
-/** POST /payments/initiate */
+router.get('/return', paymentsController.returnPage.bind(paymentsController));
+
+// All routes below require authentication (JSON bodies)
+router.use(express.json({ limit: '100kb' }), authenticate);
+
 router.post(
   '/initiate',
   validate(initiateSchema),
@@ -35,13 +42,10 @@ router.post(
   paymentsController.initiate.bind(paymentsController),
 );
 
-/** GET /payments — own transactions (admin sees all) */
 router.get('/', paymentsController.listTransactions.bind(paymentsController));
 
-/** GET /payments/:id */
 router.get('/:id', paymentsController.getTransaction.bind(paymentsController));
 
-/** POST /payments/:id/refund — Admin only */
 router.post(
   '/:id/refund',
   requireAdmin,

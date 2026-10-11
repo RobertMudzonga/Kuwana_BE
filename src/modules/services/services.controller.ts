@@ -14,12 +14,12 @@ export class ServicesController {
   }
 
   async updateService(req: Request, res: Response): Promise<void> {
-    const service = await servicesService.updateService(req.params.id, req.user!.sub, req.body);
+    const service = await servicesService.updateService(req.params.id, req.user!.sub, req.body, req.user!.role);
     successResponse(res, service, 'Service updated');
   }
 
   async deleteService(req: Request, res: Response): Promise<void> {
-    await servicesService.deleteService(req.params.id, req.user!.sub);
+    await servicesService.deleteService(req.params.id, req.user!.sub, req.user!.role);
     successResponse(res, null, 'Service deactivated');
   }
 
@@ -33,6 +33,7 @@ export class ServicesController {
       search: q.search,
       minPrice: q.minPrice ? parseFloat(q.minPrice) : undefined,
       maxPrice: q.maxPrice ? parseFloat(q.maxPrice) : undefined,
+      viewer: req.user,
     });
     successResponse(res, data, 'Services retrieved', 200, buildPaginationMeta(total, page, limit));
   }

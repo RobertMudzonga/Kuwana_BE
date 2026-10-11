@@ -137,6 +137,10 @@ After running `npm run db:seed`:
 | Admin | `admin@sosaconnect.zw` | `Admin@Sosa2024!` |
 | Provider | `emmanuel.k@example.zw` | `Provider@1234!` |
 | User | `amara.moyo@example.zw` | `User@1234!` |
+| Driver | `tafadzwa.driver@example.zw` | `Driver@1234!` |
+| Grocery seller (food, options, stock) | `sosa.wholesale@example.zw` | `Provider@1234!` |
+
+Demo accounts have verified phones, so they can order straight away. Promo code `WELCOME10` gives 10% off orders of $10 or more.
 
 ---
 
@@ -145,13 +149,30 @@ After running `npm run db:seed`:
 The system uses a **gateway abstraction layer** (`IPaymentGateway`). Switch gateways via env:
 
 ```env
-ACTIVE_PAYMENT_GATEWAY=stripe   # or: paynow
+ACTIVE_PAYMENT_GATEWAY=paynow   # or: stripe | mock
 ```
 
-| Gateway | Status | Notes |
+| Gateway | Methods | Notes |
 |---|---|---|
-| **Stripe** | ✅ Full | Requires `STRIPE_SECRET_KEY` |
-| **Paynow** | 🟡 Stub | Ready for integration — see `paynow.gateway.ts` |
+| **Paynow** | EcoCash, OneMoney (phone prompt), card (hosted page) | Needs `PAYNOW_INTEGRATION_ID` / `PAYNOW_INTEGRATION_KEY`. Results arrive at `{PUBLIC_API_URL}/api/v1/payments/paynow/result`, so production needs a public HTTPS URL. If the callback can't reach the API, pending payments are also polled. Paynow has no refund API, so refunds are recorded as manual |
+| **Stripe** | Card (Stripe Checkout) | Needs `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` |
+| **Mock** | Everything | Local development only: every payment succeeds instantly. Refused when `NODE_ENV=production` |
+
+Payment covers a whole checkout (one order per store). Unpaid checkouts are cancelled after `PENDING_PAYMENT_TIMEOUT_MINUTES` and their stock is released.
+
+## Ordering platform (October 2026)
+
+Migration `20261011120000_ordering_platform` converts the old one-service-per-order model into multi-item orders. It **preserves existing orders**: each becomes an order with one item, and statuses are mapped `PENDING→PLACED`, `CONFIRMED→ACCEPTED`, `IN_PROGRESS→PREPARING`, `COMPLETED→COLLECTED`, `DISPUTED→CANCELLED`. Back up the database before running `npm run db:migrate` in production.
+
+New endpoints cover checkout and quotes, the order lifecycle, deliveries/drivers, addresses, favourites, push devices, uploads, reviews, phone verification, password reset, SOS alerts, promo codes and platform fees. See the app repo's `docs/API_CONTRACT.md` or `/api/v1/docs`.
+
+Required in production:
+- `SMS_PROVIDER=twilio|africastalking`, with credentials (phone verification)
+- `SMTP_*` (password reset emails)
+- `PUBLIC_API_URL` (Paynow callbacks, local uploads)
+- `STORAGE_DRIVER=minio` with `MINIO_PUBLIC_URL` (uploads that survive redeploys)
+
+In development, SMS codes and reset emails are written to the API log instead of being sent.
 
 ### Stripe Webhook (local testing)
 ```bash

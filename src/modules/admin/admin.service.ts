@@ -22,7 +22,7 @@ export class AdminService {
       prisma.provider.count({ where: { approvalStatus: 'PENDING' } }),
       prisma.service.count({ where: { isActive: true } }),
       prisma.order.count(),
-      prisma.order.count({ where: { status: 'COMPLETED' } }),
+      prisma.order.count({ where: { status: { in: ['DELIVERED', 'COLLECTED'] } } }),
       prisma.payment.aggregate({
         where: { status: 'SUCCEEDED' },
         _sum: { amount: true },
@@ -75,7 +75,7 @@ export class AdminService {
     return { data, total };
   }
 
-  async createUser(dto: { email: string; phone?: string; password: string; fullName: string; role: 'USER' | 'PROVIDER' }) {
+  async createUser(dto: { email: string; phone?: string; password: string; fullName: string; role: 'USER' | 'PROVIDER' | 'DRIVER' }) {
     return authService.createUser(dto);
   }
 
@@ -133,7 +133,7 @@ export class AdminService {
       prisma.payment.findMany({
         where, skip: opts.skip, take: opts.take,
         orderBy: { createdAt: 'desc' },
-        include: { order: { select: { id: true, totalAmount: true, service: { select: { title: true } } } } },
+
       }),
       prisma.payment.count({ where }),
     ]);

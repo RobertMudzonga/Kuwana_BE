@@ -8,6 +8,7 @@ import {
   updateProviderSchema,
   nearbyQuerySchema,
   approvalSchema,
+  providerListQuerySchema,
 } from './providers.schema';
 import { auditLog } from '../../middleware/audit.middleware';
 
@@ -30,17 +31,29 @@ router.post(
   providersController.onboard.bind(providersController),
 );
 
+/** GET /providers — Store directory (approved stores; admins may filter by approvalStatus) */
+router.get(
+  '/',
+  optionalAuthenticate,
+  validate(providerListQuerySchema, 'query'),
+  providersController.listProviders.bind(providersController),
+);
+
 /** GET /providers/me — Provider own profile */
 router.get('/me', authenticate, requireProvider, providersController.getMe.bind(providersController));
 
-/** PUT /providers/me — Provider updates own profile */
-router.put(
-  '/me',
+/** GET /providers/me/stats — Seller earnings summary */
+router.get('/me/stats', authenticate, requireProvider, providersController.getMyStats.bind(providersController));
+
+/** PUT|PATCH /providers/me — Provider updates own profile and store settings */
+const updateMe = [
   authenticate,
   requireProvider,
   validate(updateProviderSchema),
   providersController.updateMe.bind(providersController),
-);
+];
+router.put('/me', ...updateMe);
+router.patch('/me', ...updateMe);
 
 /** GET /providers/:id — Public provider profile */
 router.get('/:id', optionalAuthenticate, providersController.getProvider.bind(providersController));

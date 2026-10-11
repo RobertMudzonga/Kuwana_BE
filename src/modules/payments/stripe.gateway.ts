@@ -1,15 +1,19 @@
 import Stripe from 'stripe';
+import { PaymentMethod } from '@prisma/client';
 import { env } from '../../config/env';
 import {
   IPaymentGateway,
   InitiatePaymentInput,
   InitiatePaymentResult,
-  ConfirmPaymentResult,
+  PaymentStatusResult,
   RefundInput,
+  RefundResult,
 } from './payment.gateway.interface';
 import { logger } from '../../lib/logger';
 
+/** Card payments via Stripe Checkout (a hosted page the app opens in a browser) */
 export class StripeGateway implements IPaymentGateway {
+  readonly name = 'STRIPE' as const;
   private stripe: Stripe;
 
   constructor() {
@@ -21,29 +25,34 @@ export class StripeGateway implements IPaymentGateway {
     });
   }
 
-  async initiatePayment(input: InitiatePaymentInput): Promise<InitiatePaymentResult> {
-    const amountInCents = Math.round(input.amount * 100);
-
-    const intent = await this.stripe.paymentIntents.create({
-      amount: amountInCents,
-      currency: input.currency.toLowerCase(),
-      description: input.description,
-      receipt_email: input.customerEmail,
-      metadata: {
-        orderId: input.orderId,
-        ...input.metadata,
-      },
-      automatic_payment_methods: { enabled: true },
-    });
-
-    return {
-      gatewayRef: intent.id,
-      clientSecret: intent.client_secret ?? undefined,
-      status: intent.status === 'requires_payment_method' ? 'requires_action' : 'pending',
-    };
+  supports(method: PaymentMethod): boolean {
+    return method === 'CARD';
   }
 
-  async handleWebhookEvent(rawBody: Buffer, signature: string): Promise<ConfirmPaymentResult | null> {
+  async initiatePayment(input: InitiatePaymentInput): Promise<InitiatePaymentResult> {
+    const returnBase = `${env.PUBLIC_API_URL}/api/${env.API_VERSION}/payments/return`;
+    const session = await this.stripe.checkout.sessions.create({
+      mode: 'payment',
+      line_items: [{
+        quantity: 1,
+        price_data: {
+          currency: input.currency.toLowerCase(),
+          unit_amount: Math.round(input.amount * 100),
+          product_data: { name: input.description },
+        },
+      }],
+      customer_email: input.customerEmail,
+      client_reference_id: input.paymentId,
+      metadata: { paymentId: input.paymentId },
+      payment_intent_data: { metadata: { paymentId: input.paymentId } },
+      success_url: `${returnBase}?status=success`,
+      cancel_url: `${returnBase}?status=cancelled`,
+    });
+
+    return { gatewayRef: session.id, status: 'pending', redirectUrl: session.url ?? undefined };
+  }
+
+  async handleWebhookEvent(rawBody: Buffer, signature: string): Promise<PaymentStatusResult | null> {
     if (!env.STRIPE_WEBHOOK_SECRET) {
       logger.warn('Stripe webhook secret not configured');
       return null;
@@ -57,37 +66,45 @@ export class StripeGateway implements IPaymentGateway {
       throw new Error('Invalid webhook signature');
     }
 
-    if (event.type === 'payment_intent.succeeded') {
-      const intent = event.data.object as Stripe.PaymentIntent;
-      return {
-        gatewayRef: intent.id,
-        status: 'succeeded',
-        receiptUrl: undefined, // Charge receipt fetched separately if needed
-        rawEvent: event,
-      };
+    switch (event.type) {
+      case 'checkout.session.completed':
+      case 'checkout.session.async_payment_succeeded': {
+        const session = event.data.object as Stripe.Checkout.Session;
+        if (session.payment_status !== 'paid') return null;
+        return {
+          paymentId: session.metadata?.paymentId,
+          gatewayRef: session.id,
+          status: 'succeeded',
+          amount: (session.amount_total ?? 0) / 100,
+          rawEvent: { id: event.id, type: event.type },
+        };
+      }
+      case 'checkout.session.async_payment_failed':
+      case 'checkout.session.expired': {
+        const session = event.data.object as Stripe.Checkout.Session;
+        return {
+          paymentId: session.metadata?.paymentId,
+          gatewayRef: session.id,
+          status: 'failed',
+          failureCode: event.type === 'checkout.session.expired' ? 'expired' : 'payment_failed',
+          rawEvent: { id: event.id, type: event.type },
+        };
+      }
+      default:
+        return null; // Unhandled event type — not an error
     }
-
-    if (event.type === 'payment_intent.payment_failed') {
-      const intent = event.data.object as Stripe.PaymentIntent;
-      return {
-        gatewayRef: intent.id,
-        status: 'failed',
-        failureCode: intent.last_payment_error?.code ?? 'unknown',
-        rawEvent: event,
-      };
-    }
-
-    // Unhandled event type — not an error
-    return null;
   }
 
-  async refund(input: RefundInput): Promise<{ success: boolean; refundId?: string }> {
-    const params: Stripe.RefundCreateParams = {
-      payment_intent: input.gatewayRef,
+  async refund(input: RefundInput): Promise<RefundResult> {
+    const session = await this.stripe.checkout.sessions.retrieve(input.gatewayRef);
+    const paymentIntent = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
+    if (!paymentIntent) return { success: false };
+    const refund = await this.stripe.refunds.create({
+      payment_intent: paymentIntent,
       ...(input.amount ? { amount: Math.round(input.amount * 100) } : {}),
-      reason: (input.reason as Stripe.RefundCreateParams.Reason) ?? 'requested_by_customer',
-    };
-    const refund = await this.stripe.refunds.create(params);
-    return { success: refund.status === 'succeeded', refundId: refund.id };
+      reason: 'requested_by_customer',
+      metadata: input.reason ? { reason: input.reason.slice(0, 450) } : undefined,
+    });
+    return { success: refund.status === 'succeeded' || refund.status === 'pending', refundId: refund.id };
   }
 }
