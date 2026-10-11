@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const createEmergencyContactSchema = z.object({
   label: z.string().min(2).max(50),
   phone: z.string().regex(/^\+?[0-9]{3,15}$/),
-  category: z.enum(['medical', 'security', 'fire', 'towing', 'other']),
+  category: z.enum(['medical', 'security', 'fire', 'towing', 'general', 'other']),
   description: z.string().max(300).optional(),
   city: z.string().max(100).optional(),
   lat: z.number().min(-90).max(90).optional(),

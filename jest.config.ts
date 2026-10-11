@@ -6,11 +6,8 @@ const config: Config = {
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
   transform: {
-    '^.+\\.ts$': ['ts-jest', {
-      tsconfig: {
-        strict: false,
-      },
-    }],
+    // Compile tests with the same strict settings as the app build
+    '^.+\\.ts$': ['ts-jest', { tsconfig: 'tsconfig.json' }],
   },
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',

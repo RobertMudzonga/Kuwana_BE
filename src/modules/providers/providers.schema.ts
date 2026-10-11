@@ -14,7 +14,28 @@ export const onboardProviderSchema = z.object({
   lng: z.number().min(-180).max(180).optional(),
 });
 
-export const updateProviderSchema = onboardProviderSchema.partial();
+export const updateProviderSchema = onboardProviderSchema.partial().extend({
+  // Store settings
+  isOpen: z.boolean().optional(),
+  openingHours: z.string().max(200).optional(),
+  deliveryFee: z.number().min(0).max(10000).optional(),
+  minOrder: z.number().min(0).max(100000).optional(),
+  deliveryRadiusKm: z.number().min(0).max(500).optional(),
+  estimatedPrepMinutes: z.number().int().min(0).max(1440).optional(),
+  offersDelivery: z.boolean().optional(),
+  offersCollection: z.boolean().optional(),
+}).refine((d) => d.offersDelivery !== false || d.offersCollection !== false, {
+  message: 'Offer delivery, collection, or both',
+  path: ['offersDelivery'],
+});
+
+export const providerListQuerySchema = z.object({
+  page: z.coerce.number().min(1).default(1),
+  limit: z.coerce.number().min(1).max(100).default(20),
+  approvalStatus: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED']).optional(),
+  category: ServiceCategoryEnum.optional(),
+  search: z.string().max(100).optional(),
+});
 
 export const nearbyQuerySchema = z.object({
   lat: z.coerce.number().min(-90).max(90),

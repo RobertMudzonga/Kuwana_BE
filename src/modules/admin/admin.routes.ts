@@ -10,7 +10,16 @@ import {
   createAdminProviderSchema,
   createAdminServiceSchema,
   createAdminUserSchema,
+  refundSchema,
+  settingsSchema,
+  promoSchema,
 } from './admin.schema';
+import prisma from '../../lib/prisma';
+import { OrderStatus } from '@prisma/client';
+import { orderInclude, toOrderDto } from '../../lib/serializers';
+import { successResponse, createdResponse, parsePagination, buildPaginationMeta } from '../../lib/response';
+import { paymentsService } from '../payments/payments.service';
+import { getSettings, updateSettings } from '../settings/settings.service';
 
 const router = Router();
 
@@ -71,5 +80,69 @@ router.patch(
 
 /** GET /admin/payments */
 router.get('/payments', adminController.listPayments.bind(adminController));
+
+// ── Orders ──────────────────────────────────────────────
+router.get('/orders', async (req, res) => {
+  const { page, limit, skip } = parsePagination(req.query as Record<string, unknown>);
+  const status = Object.values(OrderStatus).includes(req.query.status as OrderStatus) ? (req.query.status as OrderStatus) : undefined;
+  const where = status ? { status } : {};
+  const [orders, total] = await Promise.all([
+    prisma.order.findMany({ where, include: orderInclude, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+    prisma.order.count({ where }),
+  ]);
+  successResponse(res, orders.map(toOrderDto), 'Orders', 200, buildPaginationMeta(total, page, limit));
+});
+
+router.post(
+  '/orders/:id/refund',
+  validate(refundSchema),
+  auditLog({ action: 'PAYMENT_REFUNDED', targetType: 'Order', targetIdParam: 'id' }),
+  async (req, res) => {
+    const result = await paymentsService.refundOrder(req.params.id, {
+      amount: req.body.amount,
+      reason: req.body.reason,
+      actorId: req.user!.sub,
+      markRefundedStatus: true,
+    });
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: req.params.id }, include: orderInclude });
+    successResponse(
+      res,
+      toOrderDto(order),
+      result.manual
+        ? 'Refund recorded. Pay the customer back manually (Paynow merchant portal or cash).'
+        : 'Refund issued',
+    );
+  },
+);
+
+// ── Platform settings ───────────────────────────────────
+router.get('/settings', async (_req, res) => {
+  successResponse(res, await getSettings());
+});
+
+router.patch(
+  '/settings',
+  validate(settingsSchema),
+  auditLog({ action: 'SETTINGS_UPDATED', targetType: 'PlatformSetting' }),
+  async (req, res) => {
+    successResponse(res, await updateSettings(req.body), 'Settings updated');
+  },
+);
+
+// ── Promo codes ─────────────────────────────────────────
+router.get('/promo-codes', async (_req, res) => {
+  successResponse(res, await prisma.promoCode.findMany({ orderBy: { createdAt: 'desc' } }));
+});
+
+router.post('/promo-codes', validate(promoSchema), async (req, res) => {
+  const promo = await prisma.promoCode.create({
+    data: { ...req.body, expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : undefined },
+  });
+  createdResponse(res, promo, 'Promo code created');
+});
+
+router.patch('/promo-codes/:id', validate(z.object({ isActive: z.boolean() })), async (req, res) => {
+  successResponse(res, await prisma.promoCode.update({ where: { id: req.params.id }, data: { isActive: req.body.isActive } }));
+});
 
 export default router;

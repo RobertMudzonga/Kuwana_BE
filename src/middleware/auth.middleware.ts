@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import { env } from '../config/env';
 import { errorResponse } from '../lib/response';
 import prisma from '../lib/prisma';
@@ -62,8 +63,10 @@ export function generateAccessToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): s
 }
 
 export function generateRefreshToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
+  // jwtid makes every refresh token unique, even two issued in the same second
   return jwt.sign(payload, env.JWT_REFRESH_SECRET, {
     expiresIn: env.JWT_REFRESH_EXPIRES_IN,
+    jwtid: randomUUID(),
   } as jwt.SignOptions);
 }
 

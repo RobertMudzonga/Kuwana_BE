@@ -19,7 +19,7 @@ export class ProvidersController {
   }
 
   async getProvider(req: Request, res: Response): Promise<void> {
-    const provider = await providersService.getProvider(req.params.id);
+    const provider = await providersService.getProvider(req.params.id, req.user);
     successResponse(res, provider);
   }
 
@@ -35,9 +35,17 @@ export class ProvidersController {
     successResponse(res, provider, 'Provider approval updated');
   }
 
+  async getMyStats(req: Request, res: Response): Promise<void> {
+    successResponse(res, await providersService.getMyStats(req.user!.sub));
+  }
+
   async listProviders(req: Request, res: Response): Promise<void> {
     const { page, limit } = parsePagination(req.query as Record<string, unknown>);
-    const { approvalStatus, category, search } = req.query as Record<string, string>;
+    const { category, search } = req.query as Record<string, string>;
+    // Only admins can see pending/rejected stores; everyone else sees approved ones
+    const approvalStatus = req.user?.role === 'ADMIN'
+      ? (req.query.approvalStatus as string | undefined)
+      : 'APPROVED';
     const { data, total } = await providersService.listProviders({ page, limit, approvalStatus, category, search });
     successResponse(res, data, 'Providers retrieved', 200, buildPaginationMeta(total, page, limit));
   }

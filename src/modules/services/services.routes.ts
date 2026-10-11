@@ -30,14 +30,15 @@ router.post(
 );
 
 /** PUT /services/:id — Provider updates own listing */
-router.put(
-  '/:id',
+const update = [
   authenticate,
   requireProvider,
   validate(updateServiceSchema),
   auditLog({ action: 'SERVICE_UPDATED', targetType: 'Service', targetIdParam: 'id' }),
   servicesController.updateService.bind(servicesController),
-);
+];
+router.put('/:id', ...update);
+router.patch('/:id', ...update);
 
 /** DELETE /services/:id — Provider deactivates own listing */
 router.delete(

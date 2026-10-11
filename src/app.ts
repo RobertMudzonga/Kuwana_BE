@@ -22,6 +22,13 @@ import ordersRoutes from './modules/orders/orders.routes';
 import paymentsRoutes from './modules/payments/payments.routes';
 import emergencyRoutes from './modules/emergency/emergency.routes';
 import adminRoutes from './modules/admin/admin.routes';
+import addressesRoutes from './modules/addresses/addresses.routes';
+import favouritesRoutes from './modules/favourites/favourites.routes';
+import devicesRoutes from './modules/devices/devices.routes';
+import uploadsRoutes from './modules/uploads/uploads.routes';
+import deliveriesRoutes from './modules/deliveries/deliveries.routes';
+import reviewsRoutes from './modules/reviews/reviews.routes';
+import path from 'path';
 
 export function createApp(): Application {
   const app = express();
@@ -83,7 +90,7 @@ export function createApp(): Application {
       info: {
         title: env.APP_NAME,
         version: '1.0.0',
-        description: 'Sosa Connect — Marketplace & Emergency Services API',
+        description: 'Kuwana — Marketplace, ordering & emergency services API',
       },
       servers: [{ url: `/api/${env.API_VERSION}` }],
       components: {
@@ -118,6 +125,21 @@ export function createApp(): Application {
   // payments already mounted above (raw body first)
   app.use(`${base}/emergency`, emergencyRoutes);
   app.use(`${base}/admin`, adminRoutes);
+  app.use(`${base}/addresses`, addressesRoutes);
+  app.use(`${base}/favourites`, favouritesRoutes);
+  app.use(`${base}/devices`, devicesRoutes);
+  app.use(`${base}/uploads`, uploadsRoutes);
+  app.use(`${base}/deliveries`, deliveriesRoutes);
+  app.use(`${base}/reviews`, reviewsRoutes);
+
+  // Locally stored uploads (STORAGE_DRIVER=local)
+  if (env.STORAGE_DRIVER === 'local') {
+    app.use('/uploads', express.static(path.resolve(env.UPLOAD_DIR), {
+      maxAge: '30d',
+      immutable: true,
+      setHeaders: (res) => res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'),
+    }));
+  }
 
   // ── 404 handler ───────────────────────────────────────────
   app.use((_req: Request, res: Response) => {

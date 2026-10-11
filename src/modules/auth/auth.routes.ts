@@ -1,7 +1,15 @@
 import { Router } from 'express';
 import { authController } from './auth.controller';
 import { validate } from '../../middleware/validate.middleware';
-import { registerSchema, loginSchema } from './auth.schema';
+import {
+  registerSchema,
+  loginSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  changePasswordSchema,
+  sendPhoneCodeSchema,
+  verifyPhoneSchema,
+} from './auth.schema';
 import { authenticate } from '../../middleware/auth.middleware';
 import { auditLog } from '../../middleware/audit.middleware';
 import rateLimit from 'express-rate-limit';
@@ -63,5 +71,36 @@ router.post('/refresh', authController.refresh.bind(authController));
  *     tags: [Auth]
  */
 router.post('/logout', authenticate, authController.logout.bind(authController));
+
+router.get('/me', authenticate, authController.me.bind(authController));
+
+router.post(
+  '/change-password',
+  authenticate,
+  authLimiter,
+  validate(changePasswordSchema),
+  auditLog({ action: 'PASSWORD_CHANGED', targetType: 'User' }),
+  authController.changePassword.bind(authController),
+);
+
+router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), authController.forgotPassword.bind(authController));
+
+router.post(
+  '/reset-password',
+  authLimiter,
+  validate(resetPasswordSchema),
+  auditLog({ action: 'PASSWORD_RESET', targetType: 'User' }),
+  authController.resetPassword.bind(authController),
+);
+
+router.post('/phone/send-code', authenticate, validate(sendPhoneCodeSchema), authController.sendPhoneCode.bind(authController));
+
+router.post(
+  '/phone/verify',
+  authenticate,
+  validate(verifyPhoneSchema),
+  auditLog({ action: 'PHONE_VERIFIED', targetType: 'User' }),
+  authController.verifyPhone.bind(authController),
+);
 
 export default router;

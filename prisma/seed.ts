@@ -1,5 +1,5 @@
 /**
- * Sosa Connect — Database Seed
+ * Kuwana — Database Seed
  * Run: npm run db:seed
  *
  * Creates:
@@ -198,9 +198,88 @@ async function main() {
     console.log(`✅ Provider: ${pd.businessName}`);
   }
 
+  // ── Ordering demo data ─────────────────────────────────────
+  // Demo accounts get verified phones so they can place orders straight away
+  await prisma.user.updateMany({
+    where: { phone: { not: null }, email: { endsWith: '@example.zw' } },
+    data: { phoneVerified: true },
+  });
+
+  const driver = await prisma.user.upsert({
+    where: { email: 'tafadzwa.driver@example.zw' },
+    update: {},
+    create: {
+      email: 'tafadzwa.driver@example.zw',
+      phone: '+263776789012',
+      phoneVerified: true,
+      passwordHash: await bcrypt.hash('Driver@1234!', saltRounds),
+      role: UserRole.DRIVER,
+      emailVerified: true,
+      profile: { create: { fullName: 'Tafadzwa Ncube', city: 'Harare', country: 'ZW' } },
+    },
+  });
+  console.log(`✅ Driver: ${driver.email}`);
+
+  const grocer = await prisma.provider.findFirst({ where: { businessName: 'Sosa Wholesale Groceries' } });
+  if (grocer) {
+    await prisma.provider.update({
+      where: { id: grocer.id },
+      data: {
+        isOpen: true,
+        openingHours: 'Mon–Sat 07:00–19:00',
+        deliveryFee: 3,
+        minOrder: 10,
+        deliveryRadiusKm: 25,
+        estimatedPrepMinutes: 30,
+        offersDelivery: true,
+        offersCollection: true,
+      },
+    });
+    await prisma.service.updateMany({ where: { providerId: grocer.id, title: 'Rice (50kg bag)' }, data: { stock: 20, section: 'Groceries' } });
+    await prisma.service.updateMany({ where: { providerId: grocer.id, title: '20L Cooking Oil' }, data: { stock: 35, section: 'Groceries' } });
+
+    const meal = await prisma.service.findFirst({ where: { providerId: grocer.id, title: 'Sadza & Beef Stew' } });
+    if (!meal) {
+      await prisma.service.create({
+        data: {
+          providerId: grocer.id,
+          title: 'Sadza & Beef Stew',
+          description: 'Freshly cooked sadza with slow-cooked beef stew and greens.',
+          price: 4.5,
+          currency: 'USD',
+          unit: 'plate',
+          category: ServiceCategory.FOOD,
+          section: 'Hot meals',
+          optionGroups: {
+            create: [
+              {
+                name: 'Size', required: true, maxSelect: 1, sortOrder: 0,
+                options: { create: [{ name: 'Regular', price: 0, sortOrder: 0 }, { name: 'Large', price: 2, sortOrder: 1 }] },
+              },
+              {
+                name: 'Extras', required: false, maxSelect: 2, sortOrder: 1,
+                options: { create: [{ name: 'Coleslaw', price: 1, sortOrder: 0 }, { name: 'Extra beef', price: 3, sortOrder: 1 }] },
+              },
+            ],
+          },
+        },
+      });
+    }
+    console.log('✅ Grocer store settings, stock and a meal with options');
+  }
+
+  await prisma.promoCode.upsert({
+    where: { code: 'WELCOME10' },
+    update: {},
+    create: { code: 'WELCOME10', type: 'PERCENT', value: 10, minSubtotal: 10, maxUses: 1000 },
+  });
+  await prisma.platformSetting.upsert({ where: { id: 1 }, update: { serviceFee: 0.5 }, create: { id: 1, commissionPercent: 10, serviceFee: 0.5, taxPercent: 0 } });
+  console.log('✅ Promo code WELCOME10 and platform settings');
+
   // ── Emergency Contacts ─────────────────────────────────────
   const emergencyContacts = [
-    { label: 'AMBULANCE', phone: '999', category: 'medical', description: 'National Ambulance Service', city: 'Nationwide' },
+    { label: 'EMERGENCY', phone: '999', category: 'general', description: 'National emergency number', city: 'Nationwide' },
+    { label: 'AMBULANCE', phone: '994', category: 'medical', description: 'National Ambulance Service', city: 'Nationwide' },
     { label: 'POLICE', phone: '995', category: 'security', description: 'Zimbabwe Republic Police', city: 'Nationwide' },
     { label: 'FIRE RESCUE', phone: '993', category: 'fire', description: 'Fire & Rescue Services', city: 'Nationwide' },
     { label: 'HARARE HOSPITAL', phone: '+263242700000', category: 'medical', description: 'Parirenyatwa Group of Hospitals', city: 'Harare', lat: -17.8154, lng: 31.0495 },
@@ -225,6 +304,7 @@ async function main() {
   console.log(`\nAdmin login: ${adminEmail} / ${adminPassword}`);
   console.log('Provider login: emmanuel.k@example.zw / Provider@1234!');
   console.log('User login:     amara.moyo@example.zw / User@1234!');
+  console.log('Driver login:   tafadzwa.driver@example.zw / Driver@1234!');
 }
 
 main()
