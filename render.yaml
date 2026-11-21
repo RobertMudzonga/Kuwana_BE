@@ -1,0 +1,84 @@
+# Render Blueprint: Kuwana API (MVP / demo deployment)
+# Creates the API (Docker), Postgres (PostGIS + pg_trgm are enabled by the first migration) and Redis-compatible
+# Key Value for the job queue. Setup steps: DEPLOY_RENDER.md
+#
+# Roughly $25/month: web starter ($7) + Postgres basic-256mb (~$6) + Key Value starter ($10).
+# Region: Frankfurt is the closest Render region to Zimbabwe.
+
+services:
+  - type: web
+    name: kuwana-api
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    branch: feature/ordering-platform
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kuwana-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: kuwana-redis
+          property: connectionString
+
+      # Auth secrets: generated once by Render
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+
+      # Demo mode: mock payments (instant success) and SMS codes written to the log.
+      # Switch to paynow + a real SMS provider and set DEMO_MODE=false before taking real orders.
+      - key: DEMO_MODE
+        value: "true"
+      - key: ACTIVE_PAYMENT_GATEWAY
+        value: mock
+      - key: SMS_PROVIDER
+        value: console
+
+      # Uploads: Cloudflare R2 (S3-compatible). Render's disk is wiped on every deploy.
+      - key: STORAGE_DRIVER
+        value: minio
+      - key: MINIO_ENDPOINT        # <account-id>.r2.cloudflarestorage.com
+        sync: false
+      - key: MINIO_PORT
+        value: "443"
+      - key: MINIO_USE_SSL
+        value: "true"
+      - key: MINIO_REGION
+        value: auto
+      - key: MINIO_BUCKET_NAME
+        value: kuwana-uploads
+      - key: MINIO_ACCESS_KEY
+        sync: false
+      - key: MINIO_SECRET_KEY
+        sync: false
+      - key: MINIO_PUBLIC_URL      # the bucket's public r2.dev URL (or your custom domain)
+        sync: false
+
+      - key: LOG_LEVEL
+        value: info
+
+  - type: keyvalue
+    name: kuwana-redis
+    region: frankfurt
+    plan: starter
+    # BullMQ must never have its job keys evicted
+    maxmemoryPolicy: noeviction
+    ipAllowList: []   # reachable only from Render services in this account
+
+databases:
+  - name: kuwana-db
+    region: frankfurt
+    plan: basic-256mb
+    databaseName: kuwana
+    user: kuwana
+    postgresMajorVersion: "16"

@@ -7,6 +7,10 @@ import { startJobs, stopJobs } from './lib/jobs';
 import './jobs';
 
 async function bootstrap() {
+  if (env.DEMO_MODE) {
+    logger.warn(`🧪 DEMO_MODE is on: payments use "${env.ACTIVE_PAYMENT_GATEWAY}", SMS codes go to "${env.SMS_PROVIDER}". Do not take real orders.`);
+  }
+
   // ── Database connectivity check ───────────────────────────
   try {
     await prisma.$connect();

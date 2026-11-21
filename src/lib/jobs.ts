@@ -1,6 +1,6 @@
 import { Queue, Worker, JobsOptions } from 'bullmq';
 import Redis from 'ioredis';
-import { env } from '../config/env';
+import { env, redisConnection } from '../config/env';
 import { logger } from './logger';
 
 /**
@@ -31,9 +31,7 @@ const localTimers = new Map<string, NodeJS.Timeout>();
 export const testQueue: { name: string; data: unknown; delayMs?: number; jobId?: string }[] = [];
 
 const connection = () => ({
-  host: env.REDIS_HOST,
-  port: env.REDIS_PORT,
-  password: env.REDIS_PASSWORD,
+  ...redisConnection,
   maxRetriesPerRequest: null,
 });
 

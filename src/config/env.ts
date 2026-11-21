@@ -31,12 +31,17 @@ const envSchema = z.object({
   AUTH_RATE_LIMIT_MAX: z.coerce.number().default(20),
 
   // Public base URL of this API (used for Paynow result callbacks and locally stored uploads)
-  PUBLIC_API_URL: z.string().default('http://localhost:3000'),
+  /// On Render this defaults to the service's own https URL (RENDER_EXTERNAL_URL)
+  PUBLIC_API_URL: z.string().default(process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000'),
   // Where password-reset links point (a web page or the app's deep link scheme)
   APP_URL: z.string().default('kuwana://'),
 
+  /// Demo/MVP deployments: allows the mock payment gateway and console SMS while NODE_ENV=production.
+  /// Never set this on a deployment that takes real money.
+  DEMO_MODE: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+
   // Payments
-  // mock = instant success, for local development only (refused in production)
+  // mock = instant success, for local development only (refused in production unless DEMO_MODE=true)
   ACTIVE_PAYMENT_GATEWAY: z.enum(['stripe', 'paynow', 'mock']).default('mock'),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
@@ -84,11 +89,14 @@ const envSchema = z.object({
   MINIO_ACCESS_KEY: z.string().default('minioadmin'),
   MINIO_SECRET_KEY: z.string().default('minioadmin'),
   MINIO_BUCKET_NAME: z.string().default('sosa-connect'),
+  /// Needed by some S3-compatible stores (Cloudflare R2: "auto")
+  MINIO_REGION: z.string().optional(),
 
   // Logging
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 
-  // Redis
+  // Redis: either REDIS_URL (redis:// or rediss://, as hosting providers give it) or host/port/password
+  REDIS_URL: z.string().optional(),
   REDIS_HOST: z.string().default('localhost'),
   REDIS_PORT: z.coerce.number().default(6379),
   REDIS_PASSWORD: z.string().optional(),
@@ -102,12 +110,12 @@ const envSchema = z.object({
 });
 
 const parsed = envSchema
-  .refine((e) => !(e.NODE_ENV === 'production' && e.ACTIVE_PAYMENT_GATEWAY === 'mock'), {
-    message: 'ACTIVE_PAYMENT_GATEWAY=mock is not allowed in production',
+  .refine((e) => !(e.NODE_ENV === 'production' && !e.DEMO_MODE && e.ACTIVE_PAYMENT_GATEWAY === 'mock'), {
+    message: 'ACTIVE_PAYMENT_GATEWAY=mock is not allowed in production (unless DEMO_MODE=true)',
     path: ['ACTIVE_PAYMENT_GATEWAY'],
   })
-  .refine((e) => !(e.NODE_ENV === 'production' && e.SMS_PROVIDER === 'console'), {
-    message: 'Configure a real SMS_PROVIDER in production',
+  .refine((e) => !(e.NODE_ENV === 'production' && !e.DEMO_MODE && e.SMS_PROVIDER === 'console'), {
+    message: 'Configure a real SMS_PROVIDER in production (or set DEMO_MODE=true)',
     path: ['SMS_PROVIDER'],
   })
   .safeParse(process.env);
@@ -119,3 +127,16 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 export type Env = typeof env;
+
+/** Connection options shared by the cache and the job queue */
+export const redisConnection: { host: string; port: number; username?: string; password?: string; tls?: object } = (() => {
+  if (!env.REDIS_URL) return { host: env.REDIS_HOST, port: env.REDIS_PORT, password: env.REDIS_PASSWORD };
+  const u = new URL(env.REDIS_URL);
+  return {
+    host: u.hostname,
+    port: Number(u.port || 6379),
+    username: u.username ? decodeURIComponent(u.username) : undefined,
+    password: u.password ? decodeURIComponent(u.password) : env.REDIS_PASSWORD,
+    tls: u.protocol === 'rediss:' ? {} : undefined,
+  };
+})();

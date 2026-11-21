@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import { env } from '../config/env';
+import { env, redisConnection } from '../config/env';
 import { logger } from './logger';
 
 let redis: Redis | null = null;
@@ -7,9 +7,7 @@ let redis: Redis | null = null;
 function getRedis(): Redis {
   if (!redis) {
     redis = new Redis({
-      host: env.REDIS_HOST,
-      port: env.REDIS_PORT,
-      password: env.REDIS_PASSWORD,
+      ...redisConnection,
       retryStrategy: (times) => Math.min(times * 50, 2000),
       enableReadyCheck: false,
       maxRetriesPerRequest: null,

@@ -18,6 +18,7 @@ const getMinio = () => {
     useSSL: env.MINIO_USE_SSL === 'true',
     accessKey: env.MINIO_ACCESS_KEY,
     secretKey: env.MINIO_SECRET_KEY,
+    region: env.MINIO_REGION,
   });
   return minioClient;
 };
@@ -43,8 +44,11 @@ export async function storeImage(buffer: Buffer, mimeType: string): Promise<stri
 export async function ensurePublicBucket(): Promise<void> {
   const client = getMinio();
   if (!(await client.bucketExists(env.MINIO_BUCKET_NAME))) {
-    await client.makeBucket(env.MINIO_BUCKET_NAME, 'us-east-1');
+    await client.makeBucket(env.MINIO_BUCKET_NAME, env.MINIO_REGION ?? 'us-east-1');
   }
+  // With a public URL configured (e.g. a Cloudflare R2 public bucket or CDN), public access is managed by the
+  // provider; R2 doesn't support bucket policies at all
+  if (env.MINIO_PUBLIC_URL) return;
   await client.setBucketPolicy(env.MINIO_BUCKET_NAME, JSON.stringify({
     Version: '2012-10-17',
     Statement: [{
