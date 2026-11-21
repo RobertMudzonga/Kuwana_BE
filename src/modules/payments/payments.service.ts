@@ -1,4 +1,4 @@
-import { PaymentMethod, Prisma } from '@prisma/client';
+import { PaymentMethod, PaymentPurpose, Prisma } from '@prisma/client';
 import { env } from '../../config/env';
 import { IPaymentGateway, PaymentStatusResult } from './payment.gateway.interface';
 import { StripeGateway } from './stripe.gateway';
@@ -25,6 +25,36 @@ export function setGatewayForTests(g: IPaymentGateway | null) {
   gateway = g;
 }
 
+/**
+ * Each payment purpose other than the original food/services checkout registers a handler,
+ * so confirmations from any gateway (instant, webhook, callback or poll) reach the right flow.
+ */
+export interface PaymentPurposeHandler {
+  onSucceeded(paymentId: string, paidAmount?: number): Promise<void>;
+  onFailed(paymentId: string, failureCode: string): Promise<void>;
+}
+const purposeHandlers = new Map<PaymentPurpose, PaymentPurposeHandler>();
+export function registerPaymentPurpose(purpose: PaymentPurpose, handler: PaymentPurposeHandler) {
+  purposeHandlers.set(purpose, handler);
+}
+
+async function handlerFor(paymentId: string): Promise<PaymentPurposeHandler | undefined> {
+  const p = await prisma.payment.findUnique({ where: { id: paymentId }, select: { purpose: true } });
+  return p ? purposeHandlers.get(p.purpose) : undefined;
+}
+
+export interface StartPaymentInput {
+  purpose: PaymentPurpose;
+  /** What is being paid for (market order id, or service checkout ref) */
+  checkoutRef: string;
+  amount: number;
+  currency: string;
+  method: PaymentMethod;
+  phone?: string;
+  customerEmail: string;
+  description: string;
+}
+
 export interface PaymentSummary {
   id: string;
   status: 'PENDING' | 'PAID' | 'FAILED';
@@ -38,6 +68,61 @@ const POLL_INTERVAL_MS = 5000;
 export class PaymentsService {
   supportsMethod(method: PaymentMethod): boolean {
     return method === 'CASH' || getGateway().supports(method);
+  }
+
+  /** Whether the active online gateway can take this method */
+  gatewaySupports(method: PaymentMethod): boolean {
+    return getGateway().supports(method);
+  }
+
+  /**
+   * Start an online payment for any purpose. Instant successes are confirmed through the
+   * purpose handler before this returns.
+   */
+  async startPayment(input: StartPaymentInput): Promise<PaymentSummary> {
+    const g = getGateway();
+    if (!g.supports(input.method)) throw new BadRequestError('That payment method is not available right now');
+    const payment = await prisma.payment.create({
+      data: {
+        checkoutRef: input.checkoutRef, purpose: input.purpose, method: input.method, gateway: g.name,
+        amount: input.amount, currency: input.currency, status: 'PROCESSING',
+      },
+    });
+    try {
+      const result = await g.initiatePayment({
+        paymentId: payment.id,
+        amount: Math.round(input.amount * 100) / 100,
+        currency: input.currency,
+        method: input.method,
+        phone: input.phone,
+        customerEmail: input.customerEmail,
+        description: input.description,
+      });
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          gatewayRef: result.gatewayRef, pollUrl: result.pollUrl, failureCode: result.failureMessage,
+          // Kept so the order page can show them again after a reload
+          metadata: { instructions: result.instructions ?? null, redirectUrl: result.redirectUrl ?? null },
+        },
+      });
+      if (result.status === 'succeeded') {
+        await this.markPaid(payment.id, input.amount);
+        return { id: payment.id, status: 'PAID' };
+      }
+      if (result.status === 'failed') {
+        await this.markFailed(payment.id, result.failureMessage ?? 'declined');
+        throw new BadRequestError(result.failureMessage ?? 'The payment could not be started');
+      }
+      return { id: payment.id, status: 'PENDING', redirectUrl: result.redirectUrl, instructions: result.instructions };
+    } catch (err) {
+      if (!(err instanceof AppError)) {
+        logger.error('Payment initiation failed', { err: (err as Error).message, paymentId: payment.id });
+        await this.markFailed(payment.id, 'gateway_error');
+        throw new AppError('The payment provider is unavailable. Please try again.', 502);
+      }
+      throw err;
+    }
   }
 
   /**
@@ -126,6 +211,8 @@ export class PaymentsService {
 
   /** Idempotent: confirms payment and releases the checkout's orders to their sellers */
   async markPaid(paymentId: string, paidAmount?: number) {
+    const handler = await handlerFor(paymentId);
+    if (handler) return handler.onSucceeded(paymentId, paidAmount);
     const released = await prisma.$transaction(async (tx) => {
       const payment = await tx.payment.findUnique({ where: { id: paymentId } });
       if (!payment || payment.status === 'SUCCEEDED') return [];
@@ -154,6 +241,8 @@ export class PaymentsService {
   }
 
   async markFailed(paymentId: string, failureCode: string) {
+    const handler = await handlerFor(paymentId);
+    if (handler) return handler.onFailed(paymentId, failureCode);
     const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
     if (!payment || payment.status === 'SUCCEEDED') return;
     await prisma.$transaction([
@@ -269,6 +358,32 @@ export class PaymentsService {
     });
     if (isFull) await notifyStatusChange(orderId, 'REFUNDED');
     return { amount, manual };
+  }
+
+  /**
+   * Refund part of a marketplace order's payment, in the payment's currency, through the gateway
+   * that took it. Gateways without a refund API (Paynow) come back as manual.
+   */
+  async refundMarketPayment(orderId: string, amountTx: number, reason: string): Promise<{ manual: boolean; refundId?: string }> {
+    const payment = await prisma.payment.findFirst({
+      where: { checkoutRef: orderId, purpose: 'MARKET_ORDER', status: { in: ['SUCCEEDED', 'REFUNDED'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!payment?.gatewayRef || payment.gateway === 'MANUAL') return { manual: true };
+    const g = getGateway();
+    if (g.name !== payment.gateway) return { manual: true };
+    const result = await g.refund({ gatewayRef: payment.gatewayRef, amount: amountTx, reason });
+    if (!result.success && !result.manual) throw new AppError('The payment provider declined the refund', 502);
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        metadata: {
+          ...((payment.metadata as Prisma.JsonObject | null) ?? {}),
+          [`refund_${Date.now()}`]: { amount: amountTx, reason, refundId: result.refundId ?? null, manual: !!result.manual },
+        },
+      },
+    });
+    return { manual: !!result.manual, refundId: result.refundId };
   }
 
   async listTransactions(userId: string, userRole: string, opts: { skip: number; take: number }) {

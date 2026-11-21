@@ -43,6 +43,9 @@ const envSchema = z.object({
   STRIPE_CURRENCY: z.string().default('usd'),
   PAYNOW_INTEGRATION_ID: z.string().optional(),
   PAYNOW_INTEGRATION_KEY: z.string().optional(),
+  /** Paynow processes ZiG through a separate integration */
+  PAYNOW_ZWG_INTEGRATION_ID: z.string().optional(),
+  PAYNOW_ZWG_INTEGRATION_KEY: z.string().optional(),
   PAYNOW_RESULT_URL: z.string().optional(),
   PAYNOW_RETURN_URL: z.string().optional(),
   /// Paynow test mode only allows the merchant's own email as authemail
@@ -84,6 +87,14 @@ const envSchema = z.object({
 
   // Logging
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+
+  // Redis
+  REDIS_HOST: z.string().default('localhost'),
+  REDIS_PORT: z.coerce.number().default(6379),
+  REDIS_PASSWORD: z.string().optional(),
+
+  // Error Tracking (Sentry)
+  SENTRY_DSN: z.string().optional(),
 
   // Admin seed
   ADMIN_EMAIL: z.string().email().default('admin@sosaconnect.zw'),

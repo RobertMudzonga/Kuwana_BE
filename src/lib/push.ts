@@ -7,7 +7,8 @@ export type PushData =
   | { type: 'ORDER_UPDATE'; orderId: string }
   | { type: 'NEW_ORDER'; orderId: string }
   | { type: 'NEW_DELIVERY'; orderId?: string }
-  | { type: 'EMERGENCY_ALERT'; alertId: string };
+  | { type: 'EMERGENCY_ALERT'; alertId: string }
+  | { type: 'PRODUCT_REQUEST'; requestId: string };
 
 interface PushMessage {
   title: string;

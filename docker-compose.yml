@@ -63,6 +63,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       minio:
         condition: service_started
     networks:
@@ -93,6 +95,24 @@ services:
       - sosa_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sosa_user} -d ${POSTGRES_DB:-sosa_connect}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (Caching & Session Store) ────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: sosa_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - sosa_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -139,6 +159,8 @@ services:
 volumes:
   postgres_data:
     name: sosa_postgres_data
+  redis_data:
+    name: sosa_redis_data
   minio_data:
     name: sosa_minio_data
 

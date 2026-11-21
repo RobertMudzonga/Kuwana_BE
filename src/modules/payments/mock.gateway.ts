@@ -7,7 +7,8 @@ export class MockGateway implements IPaymentGateway {
   readonly name = 'MOCK' as const;
 
   supports(method: PaymentMethod): boolean {
-    return method !== 'CASH';
+    // Cash and wallet never go through a gateway
+    return method !== 'CASH' && method !== 'WALLET';
   }
 
   async initiatePayment(input: InitiatePaymentInput): Promise<InitiatePaymentResult> {

@@ -3,7 +3,8 @@ import { env } from './config/env';
 import { logger } from './lib/logger';
 import prisma from './lib/prisma';
 import { ensurePublicBucket } from './lib/storage';
-import { ordersService } from './modules/orders/orders.service';
+import { startJobs, stopJobs } from './lib/jobs';
+import './jobs';
 
 async function bootstrap() {
   // ── Database connectivity check ───────────────────────────
@@ -28,14 +29,8 @@ async function bootstrap() {
     logger.info(`📁 Uploads stored locally in ./${env.UPLOAD_DIR}`);
   }
 
-  // ── Background jobs ───────────────────────────────────────
-  // Cancel checkouts that were never paid, releasing their stock
-  const expiryTimer = setInterval(() => {
-    ordersService.expireUnpaidOrders()
-      .then((n) => { if (n) logger.info(`Expired ${n} unpaid order(s)`); })
-      .catch((err) => logger.error('Unpaid order expiry failed', { err }));
-  }, 60_000);
-  expiryTimer.unref();
+  // ── Background jobs (BullMQ; in-process fallback without Redis) ──
+  await startJobs();
 
   // ── Start HTTP server ─────────────────────────────────────
   const app = createApp();
@@ -48,8 +43,8 @@ async function bootstrap() {
   // ── Graceful shutdown ─────────────────────────────────────
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received — gracefully shutting down`);
-    clearInterval(expiryTimer);
     server.close(async () => {
+      await stopJobs();
       await prisma.$disconnect();
       logger.info('Database disconnected. Bye 👋');
       process.exit(0);

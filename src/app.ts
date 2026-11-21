@@ -28,6 +28,19 @@ import devicesRoutes from './modules/devices/devices.routes';
 import uploadsRoutes from './modules/uploads/uploads.routes';
 import deliveriesRoutes from './modules/deliveries/deliveries.routes';
 import reviewsRoutes from './modules/reviews/reviews.routes';
+import currencyRoutes from './modules/currency/currency.routes';
+import catalogRoutes from './modules/catalog/catalog.routes';
+import sellersRoutes from './modules/sellers/sellers.routes';
+import offersRoutes from './modules/offers/offers.routes';
+import logisticsRoutes from './modules/logistics/logistics.routes';
+import marketRoutes from './modules/market/market.routes';
+import walletRoutes from './modules/market/wallet.routes';
+import merchantRoutes from './modules/merchant/merchant.routes';
+import storeRoutes from './modules/store/store.routes';
+import controlRoutes from './modules/control/control.routes';
+import driversRoutes from './modules/drivers/drivers.routes';
+import opsRoutes from './modules/ops/ops.routes';
+import returnsRoutes from './modules/ops/returns.routes';
 import path from 'path';
 
 export function createApp(): Application {
@@ -131,6 +144,21 @@ export function createApp(): Application {
   app.use(`${base}/uploads`, uploadsRoutes);
   app.use(`${base}/deliveries`, deliveriesRoutes);
   app.use(`${base}/reviews`, reviewsRoutes);
+
+  // Marketplace
+  app.use(`${base}/currency`, currencyRoutes);
+  app.use(`${base}/catalog`, catalogRoutes);
+  app.use(`${base}/sellers`, sellersRoutes);
+  app.use(`${base}/offers`, offersRoutes);
+  app.use(`${base}/logistics`, logisticsRoutes);
+  app.use(`${base}/market`, marketRoutes);
+  app.use(`${base}/wallet`, walletRoutes);
+  app.use(`${base}/merchant`, merchantRoutes);
+  app.use(`${base}/store`, storeRoutes);
+  app.use(`${base}/drivers`, driversRoutes);
+  app.use(`${base}/control`, controlRoutes);
+  app.use(`${base}/ops`, opsRoutes);
+  app.use(`${base}/returns`, returnsRoutes);
 
   // Locally stored uploads (STORAGE_DRIVER=local)
   if (env.STORAGE_DRIVER === 'local') {

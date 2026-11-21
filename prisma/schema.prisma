@@ -21,6 +21,14 @@ enum UserRole {
   PROVIDER
   DRIVER
   ADMIN
+  /// Marketplace merchant (3P). Selling rights come from an approved SellerProfile.
+  SELLER
+  /// Hub / warehouse staff (receiving, pick-pack, dispatch)
+  WAREHOUSE
+  /// Partner at a pickup point (parcel handover, return drop-offs)
+  PICKUP_AGENT
+  /// Works at one store branch: accepts, packs and hands over orders (User.storeBranchId)
+  STORE_STAFF
 }
 
 enum UserStatus {
@@ -68,7 +76,24 @@ enum PaymentMethod {
   ECOCASH
   ONEMONEY
   CARD
+  /// Cash on delivery / collection
   CASH
+  /// Paynow express checkout (authorisation code)
+  INNBUCKS
+  /// Zimswitch / VPayments via Paynow web checkout
+  ZIMSWITCH
+  /// Platform store credit
+  WALLET
+}
+
+/// What a Payment is paying for
+enum PaymentPurpose {
+  /// Food & services checkout (orders table)
+  SERVICE_CHECKOUT
+  /// Marketplace order (market_orders table)
+  MARKET_ORDER
+  /// Gig driver collateral top-up (driver_wallets)
+  DRIVER_FLOAT
 }
 
 /// Customer-facing payment state on an order (gateway detail lives on Payment)
@@ -144,6 +169,86 @@ enum AuditAction {
   PHONE_VERIFIED
   PASSWORD_CHANGED
   PASSWORD_RESET
+  EXCHANGE_RATE_SET
+  SELLER_ONBOARDED
+  SELLER_KYC_UPDATED
+  PRODUCT_CREATED
+  PRODUCT_UPDATED
+  OFFER_CREATED
+  OFFER_UPDATED
+  OFFER_DELETED
+  WALLET_CREDITED
+  INBOUND_SUBMITTED
+  INBOUND_RECEIVED
+  SHIPMENT_STATUS_CHANGED
+  PAYOUT_REQUESTED
+  PAYOUT_UPDATED
+  COD_VERIFIED
+  RETURN_UPDATED
+  STAFF_UPDATED
+  PRODUCT_REQUEST_SUBMITTED
+  PRODUCT_REQUEST_REVIEWED
+  BRANCH_CREATED
+  BRANCH_UPDATED
+  DELIVERY_FEES_UPDATED
+  DRIVER_KYC_UPDATED
+  DRIVER_WALLET_UPDATED
+  LOCATION_UPDATED
+  ZONE_PRICING_UPDATED
+  PICKUP_POINT_UPDATED
+  CATEGORY_UPDATED
+  PRODUCT_MERGED
+  DISPATCH_OVERRIDE
+  DISPUTE_RESOLVED
+  PAYOUT_HOLD_UPDATED
+}
+
+// ── Marketplace enums ───────────────────────────────
+
+/// ISO 4217: ZWG is ZiG (Zimbabwe Gold). The app displays it as "ZiG".
+enum Currency {
+  USD
+  ZWG
+}
+
+/// Who holds and ships the stock behind an offer
+enum FulfilmentMethod {
+  /// Stock sits in a platform hub; the platform picks, packs and delivers
+  PLATFORM_FULFILLED
+  /// Seller holds stock and ships within their SLA
+  SELLER_FULFILLED
+}
+
+enum SellerKycTier {
+  /// Informal trader: national ID only, lower limits
+  INFORMAL
+  /// Registered business with ZIMRA BP number / tax clearance
+  REGISTERED
+}
+
+enum SellerPlan {
+  STARTER
+  PRO
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum DeliveryZone {
+  /// Harare / Bulawayo metro: same-day or next-day courier
+  METRO
+  /// Other towns: intercity courier or depot collection
+  INTERCITY
+}
+
+enum PickupPointType {
+  PARTNER_SHOP
+  MALL
+  BUS_DEPOT
+  COURIER_DEPOT
 }
 
 // ─────────────────────────────────────────────
@@ -159,6 +264,14 @@ model User {
   status        UserStatus @default(ACTIVE)
   emailVerified Boolean    @default(false) @map("email_verified")
   phoneVerified Boolean    @default(false) @map("phone_verified")
+  /// 0-100; drives Cash-on-Delivery eligibility (raised by successful COD, lowered by refusals)
+  codTrustScore Int        @default(50) @map("cod_trust_score")
+  /// Hub the staff member (WAREHOUSE / DRIVER) works from
+  hubId         String?    @map("hub_id")
+  /// Pickup point a PICKUP_AGENT runs
+  pickupPointId String?    @map("pickup_point_id")
+  /// Branch a STORE_STAFF member works at
+  storeBranchId String?    @map("store_branch_id")
   createdAt     DateTime   @default(now()) @map("created_at")
   updatedAt     DateTime   @updatedAt @map("updated_at")
 
@@ -176,7 +289,23 @@ model User {
   phoneVerifications PhoneVerification[]
   passwordResets     PasswordResetToken[]
   emergencyAlerts    EmergencyAlert[]
+  sellerProfile      SellerProfile?
+  exchangeRatesSet   ExchangeRate[]
+  marketOrders       MarketOrder[]
+  wallet             Wallet?
+  ledgerEntries      LedgerEntry[]
+  staffHub           Hub?                 @relation("HubStaff", fields: [hubId], references: [id], onDelete: SetNull)
+  staffPickupPoint   PickupPoint?         @relation("PickupPointAgents", fields: [pickupPointId], references: [id], onDelete: SetNull)
+  staffBranch        StoreBranch?         @relation("BranchStaff", fields: [storeBranchId], references: [id], onDelete: SetNull)
+  driverShipments    Shipment[]           @relation("ShipmentDriver")
+  codCollections     CodRemittance[]      @relation("CodCollector")
+  returnRequests     ReturnRequest[]
+  driverProfile      DriverProfile?
 
+  @@index([role])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@index([role, status])
   @@map("users")
 }
 
@@ -241,6 +370,11 @@ model Provider {
   orders   Order[]   @relation("ProviderOrders")
   reviews  Review[]
 
+  @@index([approvalStatus])
+  @@index([category])
+  @@index([isOpen])
+  @@index([createdAt(sort: Desc)])
+  @@index([approvalStatus, isOpen])
   @@map("providers")
 }
 
@@ -272,6 +406,12 @@ model Service {
   orderItems   OrderItem[]
   favourites   Favourite[]
 
+  @@index([providerId])
+  @@index([category])
+  @@index([isActive])
+  @@index([isAvailable])
+  @@index([createdAt(sort: Desc)])
+  @@index([providerId, isActive])
   @@map("services")
 }
 
@@ -351,8 +491,14 @@ model Order {
   delivery      Delivery?
 
   @@index([checkoutRef])
-  @@index([userId, createdAt])
+  @@index([userId])
+  @@index([providerId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
   @@index([providerId, status])
+  @@index([status, paymentStatus])
   @@map("orders")
 }
 
@@ -407,11 +553,16 @@ model Payment {
   refundedAt  DateTime?      @map("refunded_at")
   /// Paynow poll URL, used to check status when the result callback can't reach us
   pollUrl     String?        @map("poll_url")
+  purpose     PaymentPurpose @default(SERVICE_CHECKOUT)
   createdAt   DateTime       @default(now()) @map("created_at")
   updatedAt   DateTime       @updatedAt @map("updated_at")
 
   @@index([checkoutRef])
   @@index([gatewayRef])
+  @@index([status])
+  @@index([gateway])
+  @@index([createdAt(sort: Desc)])
+  @@index([status, gateway])
   @@map("payments")
 }
 
@@ -464,6 +615,12 @@ model AuditLog {
   // Relations
   actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
 
+  @@index([actorId])
+  @@index([action])
+  @@index([targetType])
+  @@index([targetId])
+  @@index([createdAt(sort: Desc)])
+  @@index([actorId, action])
   @@map("audit_logs")
 }
 
@@ -488,14 +645,21 @@ model Address {
   line1        String
   line2        String?
   city         String
+  suburb       String?
+  /// Directions where street numbers are ambiguous, e.g. "Opposite Mbare Musika, blue gate"
+  landmark     String?
   lat          Float?
   lng          Float?
   instructions String?
   isDefault    Boolean  @default(false) @map("is_default")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
+  /// Structured city (drives delivery zone, fees and COD eligibility); `city` keeps the display name
+  cityId       String?  @map("city_id")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cityRef      City?         @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  marketOrders MarketOrder[]
 
   @@index([userId])
   @@map("addresses")
@@ -624,4 +788,1382 @@ model EmergencyAlert {
 
   @@index([status, createdAt])
   @@map("emergency_alerts")
+}
+
+// ─────────────────────────────────────────────
+// MARKETPLACE: currency, locations, sellers, catalog, offers
+// ─────────────────────────────────────────────
+
+/// Rate history. The current rate is the latest row with effectiveFrom <= now.
+/// Rows are never edited, so any past transaction's rate can be reproduced.
+model ExchangeRate {
+  id            String   @id @default(uuid())
+  fromCurrency  Currency @map("from_currency")
+  toCurrency    Currency @map("to_currency")
+  /// Units of toCurrency per 1 fromCurrency, e.g. USD→ZWG 26.75
+  rate          Decimal  @db.Decimal(18, 6)
+  effectiveFrom DateTime @default(now()) @map("effective_from")
+  /// ADMIN, or a feed name once an automated source is connected
+  source        String   @default("ADMIN")
+  note          String?
+  setByAdminId  String?  @map("set_by_admin_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  setByAdmin User? @relation(fields: [setByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([fromCurrency, toCurrency, effectiveFrom(sort: Desc)])
+  @@map("exchange_rates")
+}
+
+model City {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  slug        String       @unique
+  province    String
+  zone        DeliveryZone @default(INTERCITY)
+  /// Cash-on-Delivery allowed for addresses in this city
+  codEligible Boolean      @default(false) @map("cod_eligible")
+  lat         Float?
+  lng         Float?
+  sortOrder   Int          @default(0) @map("sort_order")
+  isActive    Boolean      @default(true) @map("is_active")
+
+  suburbs             Suburb[]
+  hubs                Hub[]
+  pickupPoints        PickupPoint[]
+  sellers             SellerProfile[]
+  addresses           Address[]
+  marketOrders        MarketOrder[]
+  shipmentsDispatched Shipment[]      @relation("ShipmentDispatchCity")
+  offers              Offer[]         @relation("OfferDispatchCity")
+  storeBranches       StoreBranch[]
+  drivers             DriverProfile[]
+  pricingZones        PricingZone[]
+
+  @@map("cities")
+}
+
+model Suburb {
+  id       String  @id @default(uuid())
+  cityId   String  @map("city_id")
+  name     String
+  /// Approximate centre, used for distance when the buyer picks a suburb but shares no GPS pin
+  lat      Float?
+  lng      Float?
+  /// Pricing zone within the city (zone matrix fees); unzoned suburbs fall back to distance bands
+  zoneId   String? @map("zone_id")
+  isActive Boolean @default(true) @map("is_active")
+
+  city         City          @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  branches     StoreBranch[]
+  zone         PricingZone?  @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  pickupPoints PickupPoint[]
+
+  @@unique([cityId, name])
+  @@index([zoneId])
+  @@map("suburbs")
+}
+
+/// Platform warehouse holding PLATFORM_FULFILLED stock
+model Hub {
+  id             String   @id @default(uuid())
+  /// Short code printed on labels, e.g. HRE-WKT
+  code           String   @unique
+  name           String
+  cityId         String   @map("city_id")
+  suburb         String?
+  address        String
+  lat            Float?
+  lng            Float?
+  operatingHours String?  @map("operating_hours")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  city         City              @relation(fields: [cityId], references: [id])
+  offers       Offer[]
+  pickupPoints PickupPoint[]
+  shipments    Shipment[]
+  inbound      InboundShipment[]
+  staff        User[]            @relation("HubStaff")
+
+  @@index([cityId])
+  @@map("hubs")
+}
+
+/// Partner shop, mall counter or depot where customers collect parcels with an SMS PIN
+model PickupPoint {
+  id                  String          @id @default(uuid())
+  code                String          @unique
+  name                String
+  type                PickupPointType
+  cityId              String          @map("city_id")
+  suburb              String?
+  address             String
+  landmark            String?
+  lat                 Float?
+  lng                 Float?
+  phone               String?
+  operatingHours      String?         @map("operating_hours")
+  /// % of the delivery fee paid to the agent per parcel handled
+  agentCommissionRate Decimal         @default(0) @map("agent_commission_rate") @db.Decimal(5, 2)
+  /// Flat fee owed to the agent per parcel handed out
+  agentFeeUsd         Decimal         @default(0) @map("agent_fee_usd") @db.Decimal(12, 2)
+  /// Parcels the point can take per day (null = no limit)
+  maxDailyParcels     Int?            @map("max_daily_parcels")
+  suburbId            String?         @map("suburb_id")
+  /// Hub that restocks this point
+  hubId               String?         @map("hub_id")
+  isActive            Boolean         @default(true) @map("is_active")
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+
+  city           City            @relation(fields: [cityId], references: [id])
+  hub            Hub?            @relation(fields: [hubId], references: [id], onDelete: SetNull)
+  suburbArea     Suburb?         @relation(fields: [suburbId], references: [id], onDelete: SetNull)
+  marketOrders   MarketOrder[]
+  agents         User[]          @relation("PickupPointAgents")
+  returnDropOffs ReturnRequest[]
+  deliveryJobs   DeliveryJob[]
+
+  @@index([cityId, isActive])
+  @@map("pickup_points")
+}
+
+model SellerProfile {
+  id               String         @id @default(uuid())
+  userId           String         @unique @map("user_id")
+  businessName     String         @map("business_name")
+  slug             String         @unique
+  description      String?
+  logoUrl          String?        @map("logo_url")
+  /// The platform's own retail arm (1P). Competes in the Buy Box like any seller.
+  isFirstParty     Boolean        @default(false) @map("is_first_party")
+  kycTier          SellerKycTier  @default(INFORMAL) @map("kyc_tier")
+  kycStatus        ApprovalStatus @default(PENDING) @map("kyc_status")
+  /// ZIMRA Business Partner number
+  taxNumber        String?        @map("tax_number")
+  nationalId       String?        @map("national_id")
+  phone            String?
+  cityId           String?        @map("city_id")
+  plan             SellerPlan     @default(STARTER)
+  /// % of orders dispatched within SLA (0-100)
+  slaScore         Decimal        @default(100) @map("sla_score") @db.Decimal(5, 2)
+  /// % of orders that ended in a dispute (0-100)
+  disputeRate      Decimal        @default(0) @map("dispute_rate") @db.Decimal(5, 2)
+  ratingAvg        Float          @default(0) @map("rating_avg")
+  ratingCount      Int            @default(0) @map("rating_count")
+  /// Default handling time for SELLER_FULFILLED offers
+  leadTimeDays     Int            @default(2) @map("lead_time_days")
+  /// e.g. { bank, accountName, accountNumber, swift } for USD nostro
+  usdPayoutDetails Json?          @map("usd_payout_details")
+  /// e.g. { method: "ECOCASH_MERCHANT" | "BANK", ... } for ZiG
+  zigPayoutDetails Json?          @map("zig_payout_details")
+  approvedAt       DateTime?      @map("approved_at")
+  approvedBy       String?        @map("approved_by")
+  rejectionNote    String?        @map("rejection_note")
+  /// Admin freeze: no payouts while set (e.g. during a dispute)
+  payoutHoldAt     DateTime?      @map("payout_hold_at")
+  payoutHoldReason String?        @map("payout_hold_reason")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  city            City?             @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  offers          Offer[]
+  shipments       Shipment[]
+  orderItems      MarketOrderItem[]
+  ledgerEntries   LedgerEntry[]
+  inbound         InboundShipment[]
+  payouts         Payout[]
+  productRequests ProductRequest[]
+  branches        StoreBranch[]
+  orderEvents     StoreOrderEvent[]
+
+  @@index([kycStatus])
+  @@map("seller_profiles")
+}
+
+model Category {
+  id                   String       @id @default(uuid())
+  name                 String
+  slug                 String       @unique
+  parentId             String?      @map("parent_id")
+  /// Referral commission, % of item price
+  commissionRate       Decimal      @default(10) @map("commission_rate") @db.Decimal(5, 2)
+  /// Per-unit fee for PLATFORM_FULFILLED stock
+  fulfilmentFeeUsd     Decimal      @default(0) @map("fulfilment_fee_usd") @db.Decimal(12, 2)
+  /// Smallest vehicle that can carry items in this category (inherited by products unless overridden)
+  requiredVehicleClass VehicleClass @default(BIKE) @map("required_vehicle_class")
+  /// Off: only wrong or damaged deliveries can be returned (e.g. food, underwear)
+  isReturnable         Boolean      @default(true) @map("is_returnable")
+  icon                 String?
+  imageUrl             String?      @map("image_url")
+  sortOrder            Int          @default(0) @map("sort_order")
+  isActive             Boolean      @default(true) @map("is_active")
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+
+  parent   Category?        @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children Category[]       @relation("CategoryTree")
+  products Product[]
+  requests ProductRequest[]
+
+  @@index([parentId])
+  @@map("categories")
+}
+
+model Brand {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  slug      String   @unique
+  logoUrl   String?  @map("logo_url")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  products Product[]
+
+  @@map("brands")
+}
+
+/// Canonical catalog entry. Sellers never own products; they attach Offers.
+model Product {
+  id                   String                   @id @default(uuid())
+  sku                  String                   @unique
+  slug                 String                   @unique
+  title                String
+  description          String?
+  brandId              String?                  @map("brand_id")
+  categoryId           String                   @map("category_id")
+  /// Key/value spec sheet, e.g. { "Screen": "6.5 in", "RAM": "4 GB" }
+  specifications       Json                     @default("{}")
+  status               ProductStatus            @default(ACTIVE)
+  weightKg             Decimal?                 @map("weight_kg") @db.Decimal(8, 3)
+  /// Overrides the category's vehicle class (e.g. a fridge in "Appliances")
+  requiredVehicleClass VehicleClass?            @map("required_vehicle_class")
+  ratingAvg            Float                    @default(0) @map("rating_avg")
+  ratingCount          Int                      @default(0) @map("rating_count")
+  /// Set when an admin merged this duplicate into another product; old links redirect there
+  mergedIntoId         String?                  @map("merged_into_id")
+  /// Maintained by a trigger from title, brand name, description and specs
+  searchVector         Unsupported("tsvector")? @map("search_vector")
+
+  // Denormalised Buy Box result (refreshed by buybox.service), so search can sort/filter cheaply
+  buyBoxOfferId  String?  @unique @map("buy_box_offer_id")
+  buyBoxPriceUsd Decimal? @map("buy_box_price_usd") @db.Decimal(12, 2)
+  inStock        Boolean  @default(false) @map("in_stock")
+  offerCount     Int      @default(0) @map("offer_count")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  brand       Brand?            @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  category    Category          @relation(fields: [categoryId], references: [id])
+  images      ProductImage[]
+  offers      Offer[]           @relation("ProductOffers")
+  buyBoxOffer Offer?            @relation("BuyBoxOffer", fields: [buyBoxOfferId], references: [id], onDelete: SetNull)
+  orderItems  MarketOrderItem[]
+  requests    ProductRequest[]
+  mergedInto  Product?          @relation("ProductMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom  Product[]         @relation("ProductMerge")
+
+  @@index([categoryId, status])
+  @@index([brandId])
+  @@index([status, inStock])
+  @@index([buyBoxPriceUsd])
+  @@index([searchVector], type: Gin)
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "products_title_trgm_idx")
+  @@map("products")
+}
+
+model ProductImage {
+  id        String  @id @default(uuid())
+  productId String  @map("product_id")
+  /// Full-size WebP/JPEG
+  url       String
+  /// Small compressed variant for lists on slow connections
+  thumbUrl  String? @map("thumb_url")
+  alt       String?
+  sortOrder Int     @default(0) @map("sort_order")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@map("product_images")
+}
+
+/// A seller's price and stock for a catalog product. One product can have many offers.
+/// PLATFORM_FULFILLED offers are per hub: stock in two hubs is two offers.
+model Offer {
+  id             String           @id @default(uuid())
+  productId      String           @map("product_id")
+  sellerId       String           @map("seller_id")
+  sellerSku      String?          @map("seller_sku")
+  priceUsd       Decimal          @map("price_usd") @db.Decimal(12, 2)
+  /// Optional "was" price shown struck through
+  listPriceUsd   Decimal?         @map("list_price_usd") @db.Decimal(12, 2)
+  /// Seller's shipping charge; counts toward the landed price in the Buy Box
+  shippingFeeUsd Decimal          @default(0) @map("shipping_fee_usd") @db.Decimal(12, 2)
+  stockQty       Int              @default(0) @map("stock_qty")
+  fulfilmentType FulfilmentMethod @map("fulfilment_type")
+  /// Required for PLATFORM_FULFILLED: the hub holding the stock
+  hubId          String?          @map("hub_id")
+  /// Where a SELLER_FULFILLED offer ships from
+  dispatchCityId String?          @map("dispatch_city_id")
+  /// Handling time before dispatch (SELLER_FULFILLED)
+  leadTimeDays   Int              @default(2) @map("lead_time_days")
+  isActive       Boolean          @default(true) @map("is_active")
+  /// Set by buybox.service; at most one winner per product
+  isBuyBoxWinner Boolean          @default(false) @map("is_buy_box_winner")
+  /// Shelf / bin at the hub where this offer's stock is kept (PLATFORM_FULFILLED)
+  binLocation    String?          @map("bin_location")
+  /// Store branch holding the stock (SELLER_FULFILLED, zero-warehouse model)
+  storeBranchId  String?          @map("store_branch_id")
+  /// Minutes the branch needs to pick and pack an order for this item
+  prepTimeMins   Int              @default(30) @map("prep_time_mins")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  product       Product               @relation("ProductOffers", fields: [productId], references: [id], onDelete: Cascade)
+  seller        SellerProfile         @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  hub           Hub?                  @relation(fields: [hubId], references: [id], onDelete: Restrict)
+  storeBranch   StoreBranch?          @relation(fields: [storeBranchId], references: [id], onDelete: Restrict)
+  dispatchCity  City?                 @relation("OfferDispatchCity", fields: [dispatchCityId], references: [id], onDelete: SetNull)
+  buyBoxProduct Product?              @relation("BuyBoxOffer")
+  orderItems    MarketOrderItem[]
+  inboundItems  InboundShipmentItem[]
+
+  @@index([productId, isActive])
+  @@index([sellerId])
+  @@index([hubId])
+  @@index([storeBranchId])
+  @@map("offers")
+}
+
+// ─────────────────────────────────────────────
+// MARKETPLACE: checkout, orders, shipments, wallet, ledger (Phase 2)
+// ─────────────────────────────────────────────
+
+enum MarketOrderStatus {
+  /// Waiting for an online payment to be confirmed
+  PENDING_PAYMENT
+  /// Cash-on-delivery order waiting for the buyer's SMS code
+  AWAITING_COD_OTP
+  /// Cash-on-delivery order waiting for its upfront delivery-fee deposit (EcoCash / InnBucks)
+  AWAITING_DEPOSIT
+  /// Paid, or COD confirmed: shipments are being fulfilled
+  CONFIRMED
+  /// Every shipment delivered or collected
+  COMPLETED
+  CANCELLED
+}
+
+enum MarketPaymentStatus {
+  UNPAID
+  PAID
+  /// Cash on delivery: to be collected at handover
+  COD_PENDING
+  FAILED
+  REFUNDED
+}
+
+enum DeliveryMode {
+  DELIVERY
+  PICKUP
+}
+
+enum DeliverySpeed {
+  STANDARD
+  /// Same-day metro courier where eligible
+  EXPRESS
+}
+
+enum DeliveryTier {
+  METRO_SAME_DAY
+  METRO_NEXT_DAY
+  INTERCITY_COURIER
+  PICKUP_POINT
+  /// Seller ships with their own approved courier
+  SELLER_COURIER
+  /// A gig driver collects from the store branch and delivers to the door (zero-warehouse model)
+  STORE_DELIVERY
+}
+
+enum ShipmentStatus {
+  /// Order not yet paid / confirmed
+  PENDING
+  /// Confirmed: hub to pick and pack, or seller to dispatch
+  PROCESSING
+  PACKED
+  DISPATCHED
+  OUT_FOR_DELIVERY
+  READY_FOR_COLLECTION
+  DELIVERED
+  COLLECTED
+  CANCELLED
+  RETURNED
+}
+
+enum LedgerEntryType {
+  /// An order item sold (seller earning less commission and fulfilment fee)
+  SALE
+  /// Delivery charge on a shipment (platform revenue or seller shipping)
+  SHIPPING_FEE
+  /// Cash-on-delivery fee
+  COD_FEE
+  WALLET_CREDIT
+  WALLET_DEBIT
+  REFUND
+  COD_COLLECTED
+  PAYOUT
+  ADJUSTMENT
+}
+
+enum CodCollectionStatus {
+  NOT_COD
+  /// Cash still to be collected at handover
+  PENDING
+  COLLECTED
+}
+
+/// Admin-editable marketplace rules (single row, id = 1)
+model MarketSettings {
+  id                       Int     @id @default(1)
+  freeDeliveryThresholdUsd Decimal @default(50) @map("free_delivery_threshold_usd") @db.Decimal(12, 2)
+  metroNextDayFeeUsd       Decimal @default(3) @map("metro_next_day_fee_usd") @db.Decimal(12, 2)
+  metroSameDayFeeUsd       Decimal @default(6) @map("metro_same_day_fee_usd") @db.Decimal(12, 2)
+  /// Local hour (Africa/Harare) after which same-day is no longer offered
+  sameDayCutoffHour        Int     @default(12) @map("same_day_cutoff_hour")
+  intercityFeeUsd          Decimal @default(7) @map("intercity_fee_usd") @db.Decimal(12, 2)
+  pickupFeeUsd             Decimal @default(1.5) @map("pickup_fee_usd") @db.Decimal(12, 2)
+  intercityPickupFeeUsd    Decimal @default(4) @map("intercity_pickup_fee_usd") @db.Decimal(12, 2)
+  heavyThresholdKg         Decimal @default(10) @map("heavy_threshold_kg") @db.Decimal(8, 3)
+  heavySurchargePerKgUsd   Decimal @default(0.5) @map("heavy_surcharge_per_kg_usd") @db.Decimal(12, 2)
+  codEnabled               Boolean @default(true) @map("cod_enabled")
+  codMaxOrderUsd           Decimal @default(150) @map("cod_max_order_usd") @db.Decimal(12, 2)
+  codMinTrustScore         Int     @default(40) @map("cod_min_trust_score")
+  codFeeUsd                Decimal @default(1) @map("cod_fee_usd") @db.Decimal(12, 2)
+  paymentTimeoutMinutes    Int     @default(30) @map("payment_timeout_minutes")
+  codOtpTimeoutMinutes     Int     @default(15) @map("cod_otp_timeout_minutes")
+  /// Days after delivery before seller earnings become available (return window)
+  sellerHoldDays           Int     @default(7) @map("seller_hold_days")
+  minPayoutUsd             Decimal @default(10) @map("min_payout_usd") @db.Decimal(12, 2)
+  /// Days after delivery a buyer may request a return
+  returnWindowDays         Int     @default(7) @map("return_window_days")
+  /// Failed home-delivery attempts before a parcel goes back to stock
+  maxDeliveryAttempts      Int     @default(2) @map("max_delivery_attempts")
+
+  // ── Zero-warehouse model ──
+  /// Platform hubs (warehouse stock) take part in the Buy Box and checkout. Off: stores fulfil everything.
+  hubsEnabled            Boolean  @default(false) @map("hubs_enabled")
+  /// Extra collateral on top of parcel value, % (0 = collateral equals parcel value)
+  collateralBufferPct    Decimal  @default(0) @map("collateral_buffer_pct") @db.Decimal(5, 2)
+  /// Online drivers within this distance of the branch see a new job
+  jobBroadcastRadiusKm   Decimal  @default(8) @map("job_broadcast_radius_km") @db.Decimal(6, 2)
+  /// Branches further than this from the drop-off can't win the Buy Box for that buyer
+  maxDeliveryRadiusKm    Decimal  @default(40) @map("max_delivery_radius_km") @db.Decimal(6, 2)
+  /// Minutes a store has to accept a new order before it is reassigned
+  storeAcceptSlaMinutes  Int      @default(15) @map("store_accept_sla_minutes")
+  /// Hours after delivery before store earnings leave escrow
+  escrowHoldHours        Int      @default(48) @map("escrow_hold_hours")
+  /// Discount on delivery to a pickup point (drivers batch these), % of the door-delivery fee
+  pickupPointDiscountPct Decimal  @default(40) @map("pickup_point_discount_pct") @db.Decimal(5, 2)
+  /// COD orders pay their delivery + COD fee upfront by EcoCash / InnBucks; only the goods are paid in cash
+  codDepositRequired     Boolean  @default(true) @map("cod_deposit_required")
+  /// Jobs a driver may hold at once (claimed or in transit), each covered by its own collateral
+  driverMaxActiveJobs    Int      @default(3) @map("driver_max_active_jobs")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  @@map("market_settings")
+}
+
+model MarketOrder {
+  id                 String              @id @default(uuid())
+  /// Short human reference, e.g. KM7Q2M9X
+  reference          String              @unique
+  userId             String              @map("user_id")
+  status             MarketOrderStatus   @default(PENDING_PAYMENT)
+  paymentStatus      MarketPaymentStatus @default(UNPAID) @map("payment_status")
+  paymentMethod      PaymentMethod       @map("payment_method")
+  paymentCurrency    Currency            @map("payment_currency")
+  paymentPhone       String?             @map("payment_phone")
+  /// USD→ZiG rate fixed when the order was created; every ZiG amount on this order uses it
+  lockedExchangeRate Decimal             @map("locked_exchange_rate") @db.Decimal(18, 6)
+  exchangeRateId     String?             @map("exchange_rate_id")
+  /// Admin freeze: this order's store earnings stay in escrow while set
+  payoutHoldAt       DateTime?           @map("payout_hold_at")
+  payoutHoldReason   String?             @map("payout_hold_reason")
+
+  deliveryMode      DeliveryMode  @map("delivery_mode")
+  deliverySpeed     DeliverySpeed @default(STANDARD) @map("delivery_speed")
+  addressId         String?       @map("address_id")
+  /// Snapshot of the address or pickup point at order time
+  deliveryAddress   Json          @map("delivery_address")
+  destinationCityId String        @map("destination_city_id")
+  pickupPointId     String?       @map("pickup_point_id")
+
+  recipientName     String  @map("recipient_name")
+  recipientPhone    String  @map("recipient_phone")
+  /// Checked at handover for gift / diaspora orders
+  recipientIdNumber String? @map("recipient_id_number")
+  /// Someone other than the buyer receives the parcel
+  isGift            Boolean @default(false) @map("is_gift")
+
+  itemsSubtotalUsd    Decimal   @map("items_subtotal_usd") @db.Decimal(12, 2)
+  /// Platform delivery charges across platform-fulfilled shipments
+  deliveryFeeUsd      Decimal   @default(0) @map("delivery_fee_usd") @db.Decimal(12, 2)
+  /// Seller shipping across seller-fulfilled shipments
+  sellerShippingUsd   Decimal   @default(0) @map("seller_shipping_usd") @db.Decimal(12, 2)
+  codFeeUsd           Decimal   @default(0) @map("cod_fee_usd") @db.Decimal(12, 2)
+  discountUsd         Decimal   @default(0) @map("discount_usd") @db.Decimal(12, 2)
+  totalUsd            Decimal   @map("total_usd") @db.Decimal(12, 2)
+  /// totalUsd at the locked rate
+  totalZwg            Decimal   @map("total_zwg") @db.Decimal(14, 2)
+  /// What the buyer pays, in paymentCurrency
+  amountDue           Decimal   @map("amount_due") @db.Decimal(14, 2)
+  freeDeliveryApplied Boolean   @default(false) @map("free_delivery_applied")
+  /// Cash on delivery: non-refundable delivery + COD fee paid online before the order is confirmed
+  depositUsd          Decimal   @default(0) @map("deposit_usd") @db.Decimal(12, 2)
+  depositPaidAt       DateTime? @map("deposit_paid_at")
+  /// Cash on delivery: what the driver collects at the door (the goods), USD
+  cashDueUsd          Decimal   @default(0) @map("cash_due_usd") @db.Decimal(12, 2)
+
+  notes             String?
+  codOtpHash        String?   @map("cod_otp_hash")
+  codOtpExpiresAt   DateTime? @map("cod_otp_expires_at")
+  codOtpAttempts    Int       @default(0) @map("cod_otp_attempts")
+  /// Wrong collection PIN entries at handover (locks after too many)
+  pinAttempts       Int       @default(0) @map("pin_attempts")
+  codOtpSentAt      DateTime? @map("cod_otp_sent_at")
+  /// 6-digit PIN the recipient gives at handover / collection (stored hashed)
+  collectionPinHash String?   @map("collection_pin_hash")
+  /// Payment or COD confirmation deadline; unconfirmed orders are cancelled after this
+  expiresAt         DateTime? @map("expires_at")
+  confirmedAt       DateTime? @map("confirmed_at")
+  cancelledAt       DateTime? @map("cancelled_at")
+  cancelReason      String?   @map("cancel_reason")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+  address         Address?          @relation(fields: [addressId], references: [id], onDelete: SetNull)
+  destinationCity City              @relation(fields: [destinationCityId], references: [id])
+  pickupPoint     PickupPoint?      @relation(fields: [pickupPointId], references: [id], onDelete: SetNull)
+  shipments       Shipment[]
+  items           MarketOrderItem[]
+  ledgerEntries   LedgerEntry[]
+  codRemittances  CodRemittance[]
+  returns         ReturnRequest[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, expiresAt])
+  @@map("market_orders")
+}
+
+/// One parcel: everything leaving the same hub, or the same seller
+model Shipment {
+  id                   String           @id @default(uuid())
+  orderId              String           @map("order_id")
+  /// e.g. KM7Q2M9X-1
+  reference            String           @unique
+  sequence             Int
+  sourceType           FulfilmentMethod @map("source_type")
+  hubId                String?          @map("hub_id")
+  /// Set for SELLER_FULFILLED shipments
+  sellerId             String?          @map("seller_id")
+  /// Branch that packs this shipment (zero-warehouse model)
+  storeBranchId        String?          @map("store_branch_id")
+  /// Straight-line km from the branch to the drop-off
+  distanceKm           Decimal?         @map("distance_km") @db.Decimal(6, 2)
+  /// Smallest vehicle that can carry every item
+  vehicleClass         VehicleClass?    @map("vehicle_class")
+  /// What the platform pays the driver (feeUsd - driverFeeUsd is the delivery margin)
+  driverFeeUsd         Decimal?         @map("driver_fee_usd") @db.Decimal(12, 2)
+  /// Estimated minutes from confirmation to door (store shipments)
+  etaMinutes           Int?             @map("eta_minutes")
+  /// Store must accept by this time or the parcel is reassigned (zero-warehouse SLA)
+  acceptBy             DateTime?        @map("accept_by")
+  acceptedAt           DateTime?        @map("accepted_at")
+  acceptedById         String?          @map("accepted_by_id")
+  /// Times this parcel moved to another store after a timeout or out-of-stock
+  reassignCount        Int              @default(0) @map("reassign_count")
+  dispatchCityId       String?          @map("dispatch_city_id")
+  tier                 DeliveryTier
+  status               ShipmentStatus   @default(PENDING)
+  /// What the buyer pays for this parcel (platform delivery or seller shipping)
+  feeUsd               Decimal          @default(0) @map("fee_usd") @db.Decimal(12, 2)
+  weightKg             Decimal?         @map("weight_kg") @db.Decimal(10, 3)
+  etaMinDays           Int              @map("eta_min_days")
+  etaMaxDays           Int              @map("eta_max_days")
+  /// Seller-fulfilled: must be dispatched by this time (SLA)
+  dispatchBy           DateTime?        @map("dispatch_by")
+  packedAt             DateTime?        @map("packed_at")
+  dispatchedAt         DateTime?        @map("dispatched_at")
+  /// Delivered or collected; starts the seller's payout hold period
+  deliveredAt          DateTime?        @map("delivered_at")
+  courierName          String?          @map("courier_name")
+  trackingNumber       String?          @map("tracking_number")
+  /// Dispatched by dispatchBy (feeds the seller's SLA score)
+  dispatchedOnTime     Boolean?         @map("dispatched_on_time")
+  /// Hub driver carrying the parcel (metro home delivery)
+  driverId             String?          @map("driver_id")
+  outForDeliveryAt     DateTime?        @map("out_for_delivery_at")
+  /// Arrived at the pickup point; recipient notified
+  readyForCollectionAt DateTime?        @map("ready_for_collection_at")
+  deliveryAttempts     Int              @default(0) @map("delivery_attempts")
+  lastAttemptNote      String?          @map("last_attempt_note")
+  /// Staff member who completed the handover
+  handedOverById       String?          @map("handed_over_by_id")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  updatedAt            DateTime         @updatedAt @map("updated_at")
+
+  order         MarketOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  hub           Hub?              @relation(fields: [hubId], references: [id])
+  seller        SellerProfile?    @relation(fields: [sellerId], references: [id])
+  storeBranch   StoreBranch?      @relation(fields: [storeBranchId], references: [id])
+  deliveryJob   DeliveryJob?
+  storeEvents   StoreOrderEvent[]
+  dispatchCity  City?             @relation("ShipmentDispatchCity", fields: [dispatchCityId], references: [id])
+  driver        User?             @relation("ShipmentDriver", fields: [driverId], references: [id], onDelete: SetNull)
+  codRemittance CodRemittance?
+  returnItems   ReturnItem[]
+  items         MarketOrderItem[]
+
+  @@index([orderId])
+  @@index([hubId, status])
+  @@index([sellerId, status])
+  @@index([storeBranchId, status])
+  @@map("shipments")
+}
+
+model MarketOrderItem {
+  id               String           @id @default(uuid())
+  orderId          String           @map("order_id")
+  shipmentId       String           @map("shipment_id")
+  offerId          String           @map("offer_id")
+  productId        String           @map("product_id")
+  sellerId         String           @map("seller_id")
+  /// Snapshots so later catalog edits don't change past orders
+  title            String
+  sku              String
+  imageUrl         String?          @map("image_url")
+  fulfilmentType   FulfilmentMethod @map("fulfilment_type")
+  quantity         Int
+  unitPriceUsd     Decimal          @map("unit_price_usd") @db.Decimal(12, 2)
+  lineTotalUsd     Decimal          @map("line_total_usd") @db.Decimal(12, 2)
+  /// Category commission % and per-unit fulfilment fee in force at order time
+  commissionRate   Decimal          @map("commission_rate") @db.Decimal(5, 2)
+  commissionUsd    Decimal          @map("commission_usd") @db.Decimal(12, 2)
+  fulfilmentFeeUsd Decimal          @default(0) @map("fulfilment_fee_usd") @db.Decimal(12, 2)
+  /// lineTotal − commission − fulfilment fee
+  sellerNetUsd     Decimal          @map("seller_net_usd") @db.Decimal(12, 2)
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  order       MarketOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  shipment    Shipment      @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  offer       Offer         @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  product     Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  seller      SellerProfile @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  returnItems ReturnItem[]
+
+  @@index([orderId])
+  @@index([sellerId, createdAt(sort: Desc)])
+  @@map("market_order_items")
+}
+
+/// Store credit, in USD. Every balance change has a matching ledger entry.
+model Wallet {
+  userId     String   @id @map("user_id")
+  balanceUsd Decimal  @default(0) @map("balance_usd") @db.Decimal(12, 2)
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("wallets")
+}
+
+/// Append-only money record (UPDATE and DELETE are blocked by a trigger).
+/// All amounts are USD; grossTx is the gross in the transaction currency at exchangeRateAtTx.
+model LedgerEntry {
+  id                 String              @id @default(uuid())
+  type               LedgerEntryType
+  orderId            String?             @map("order_id")
+  orderItemId        String?             @map("order_item_id")
+  shipmentId         String?             @map("shipment_id")
+  sellerId           String?             @map("seller_id")
+  userId             String?             @map("user_id")
+  paymentId          String?             @map("payment_id")
+  payoutId           String?             @map("payout_id")
+  currency           Currency
+  /// USD→ZiG rate the transaction was priced at
+  exchangeRateAtTx   Decimal             @map("exchange_rate_at_tx") @db.Decimal(18, 6)
+  grossUsd           Decimal             @map("gross_usd") @db.Decimal(14, 2)
+  grossTx            Decimal             @map("gross_tx") @db.Decimal(14, 2)
+  commissionUsd      Decimal             @default(0) @map("commission_usd") @db.Decimal(14, 2)
+  fulfilmentFeeUsd   Decimal             @default(0) @map("fulfilment_fee_usd") @db.Decimal(14, 2)
+  /// Platform's share of this entry
+  platformRevenueUsd Decimal             @default(0) @map("platform_revenue_usd") @db.Decimal(14, 2)
+  /// Change to the seller's payable balance
+  sellerNetUsd       Decimal             @default(0) @map("seller_net_usd") @db.Decimal(14, 2)
+  /// Change to the user's wallet balance
+  walletDeltaUsd     Decimal             @default(0) @map("wallet_delta_usd") @db.Decimal(14, 2)
+  codStatus          CodCollectionStatus @default(NOT_COD) @map("cod_status")
+  memo               String?
+  createdAt          DateTime            @default(now()) @map("created_at")
+
+  order  MarketOrder?   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  seller SellerProfile? @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  user   User?          @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([sellerId, createdAt])
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@map("ledger_entries")
+}
+
+// ─────────────────────────────────────────────
+// MARKETPLACE: seller operations (Phase 3)
+// ─────────────────────────────────────────────
+
+enum InboundStatus {
+  /// Being prepared by the seller
+  DRAFT
+  /// Seller has sent (or is sending) the stock to the hub
+  SUBMITTED
+  /// Hub counted the stock; good units were added to the offers
+  RECEIVED
+  CANCELLED
+}
+
+/// Advance shipping notice: stock a seller sends to a hub for PLATFORM_FULFILLED offers
+model InboundShipment {
+  id              String        @id @default(uuid())
+  /// Printed on the boxes, e.g. ASN-7Q2M9X
+  reference       String        @unique
+  sellerId        String        @map("seller_id")
+  hubId           String        @map("hub_id")
+  status          InboundStatus @default(DRAFT)
+  expectedArrival DateTime?     @map("expected_arrival")
+  carrier         String?
+  notes           String?
+  submittedAt     DateTime?     @map("submitted_at")
+  receivedAt      DateTime?     @map("received_at")
+  receivedById    String?       @map("received_by_id")
+  receivingNotes  String?       @map("receiving_notes")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  seller SellerProfile         @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  hub    Hub                   @relation(fields: [hubId], references: [id])
+  items  InboundShipmentItem[]
+
+  @@index([sellerId, createdAt(sort: Desc)])
+  @@index([hubId, status])
+  @@map("inbound_shipments")
+}
+
+model InboundShipmentItem {
+  id               String @id @default(uuid())
+  inboundId        String @map("inbound_id")
+  offerId          String @map("offer_id")
+  quantityExpected Int    @map("quantity_expected")
+  /// Good units counted at the hub (added to stock)
+  quantityReceived Int?   @map("quantity_received")
+  quantityDamaged  Int    @default(0) @map("quantity_damaged")
+
+  inbound InboundShipment @relation(fields: [inboundId], references: [id], onDelete: Cascade)
+  offer   Offer           @relation(fields: [offerId], references: [id], onDelete: Restrict)
+
+  @@unique([inboundId, offerId])
+  @@map("inbound_shipment_items")
+}
+
+enum PayoutStatus {
+  /// Funds reserved; waiting for finance
+  REQUESTED
+  APPROVED
+  PAID
+  /// Funds returned to the seller's balance
+  REJECTED
+}
+
+enum PayoutMethod {
+  /// USD nostro / FCA bank account
+  USD_BANK
+  ZWG_BANK
+  ECOCASH_MERCHANT
+}
+
+model Payout {
+  id            String       @id @default(uuid())
+  /// e.g. PO-7Q2M9X
+  reference     String       @unique
+  sellerId      String       @map("seller_id")
+  currency      Currency
+  method        PayoutMethod
+  amountUsd     Decimal      @map("amount_usd") @db.Decimal(14, 2)
+  /// amountUsd in the payout currency at exchangeRate
+  amountTx      Decimal      @map("amount_tx") @db.Decimal(14, 2)
+  exchangeRate  Decimal      @map("exchange_rate") @db.Decimal(18, 6)
+  /// Snapshot of the bank / wallet details when requested
+  destination   Json
+  status        PayoutStatus @default(REQUESTED)
+  externalRef   String?      @map("external_ref")
+  note          String?
+  processedById String?      @map("processed_by_id")
+  processedAt   DateTime?    @map("processed_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  seller SellerProfile @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+
+  @@index([sellerId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("payouts")
+}
+
+// ─────────────────────────────────────────────
+// MARKETPLACE: operations, COD cash, returns (Phase 4)
+// ─────────────────────────────────────────────
+
+enum CodRemittanceStatus {
+  /// Cash is with the driver / agent
+  COLLECTED
+  /// Counted at the hub and matches
+  VERIFIED
+  /// Counted at the hub and does not match
+  DISCREPANCY
+}
+
+/// Cash collected for one cash-on-delivery parcel, reconciled at the hub
+model CodRemittance {
+  id              String              @id @default(uuid())
+  shipmentId      String              @unique @map("shipment_id")
+  orderId         String              @map("order_id")
+  collectorId     String              @map("collector_id")
+  currency        Currency
+  expectedAmount  Decimal             @map("expected_amount") @db.Decimal(14, 2)
+  collectedAmount Decimal             @map("collected_amount") @db.Decimal(14, 2)
+  status          CodRemittanceStatus @default(COLLECTED)
+  collectedAt     DateTime            @default(now()) @map("collected_at")
+  verifiedById    String?             @map("verified_by_id")
+  verifiedAt      DateTime?           @map("verified_at")
+  note            String?
+
+  shipment  Shipment    @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+  order     MarketOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  collector User        @relation("CodCollector", fields: [collectorId], references: [id], onDelete: Restrict)
+
+  @@index([collectorId, status])
+  @@index([status])
+  @@map("cod_remittances")
+}
+
+enum ReturnReason {
+  DEFECTIVE
+  WRONG_ITEM
+  DAMAGED_IN_TRANSIT
+  NOT_AS_DESCRIBED
+}
+
+enum RefundPayer {
+  /// Reversed from the store's earnings
+  STORE
+  /// Kuwana goodwill; the store keeps its earnings
+  PLATFORM
+}
+
+enum ReturnMethod {
+  DROP_OFF
+  COURIER_COLLECTION
+}
+
+enum RefundDestination {
+  /// Instant store credit (USD)
+  WALLET
+  /// Back to the original payment method
+  ORIGINAL
+}
+
+enum ReturnStatus {
+  /// Approved; waiting for the buyer to hand the item over
+  APPROVED
+  /// Handed to a pickup agent or courier
+  DROPPED_OFF
+  /// At the hub, waiting for inspection
+  RECEIVED
+  REFUNDED
+  /// Inspection failed; no refund
+  REJECTED
+  CANCELLED
+}
+
+model ReturnRequest {
+  id                String            @id @default(uuid())
+  /// e.g. RT-7Q2M9X; written on the parcel
+  reference         String            @unique
+  orderId           String            @map("order_id")
+  userId            String            @map("user_id")
+  reason            ReturnReason
+  details           String?
+  method            ReturnMethod
+  pickupPointId     String?           @map("pickup_point_id")
+  refundDestination RefundDestination @map("refund_destination")
+  status            ReturnStatus      @default(APPROVED)
+  refundUsd         Decimal?          @map("refund_usd") @db.Decimal(12, 2)
+  /// Refund went back through a gateway with no refund API and must be paid by hand
+  refundManual      Boolean           @default(false) @map("refund_manual")
+  inspectionNote    String?           @map("inspection_note")
+  /// Seller's fault (counts toward the seller's dispute rate)
+  sellerAtFault     Boolean?          @map("seller_at_fault")
+  /// Who funded the refund when an admin resolved the dispute
+  refundPaidBy      RefundPayer?      @map("refund_paid_by")
+  droppedOffAt      DateTime?         @map("dropped_off_at")
+  receivedAt        DateTime?         @map("received_at")
+  resolvedAt        DateTime?         @map("resolved_at")
+  handledById       String?           @map("handled_by_id")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  order       MarketOrder  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  pickupPoint PickupPoint? @relation(fields: [pickupPointId], references: [id], onDelete: SetNull)
+  items       ReturnItem[]
+
+  @@index([orderId])
+  @@index([status, createdAt])
+  @@map("return_requests")
+}
+
+model ReturnItem {
+  id          String  @id @default(uuid())
+  returnId    String  @map("return_id")
+  orderItemId String  @map("order_item_id")
+  shipmentId  String  @map("shipment_id")
+  quantity    Int
+  /// Set at inspection: goes back on sale
+  resellable  Boolean @default(false)
+
+  returnRequest ReturnRequest   @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  orderItem     MarketOrderItem @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  shipment      Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+
+  @@unique([returnId, orderItemId])
+  @@map("return_items")
+}
+
+// ─────────────────────────────────────────────
+// MARKETPLACE: seller requests for new catalog products
+// ─────────────────────────────────────────────
+
+enum ProductRequestStatus {
+  PENDING
+  /// A new catalog product was created from the request
+  APPROVED
+  /// The product was already in the catalog; the request points at it
+  DUPLICATE
+  REJECTED
+  CANCELLED
+}
+
+/// A seller asks Kuwana to add a product they want to sell. Sellers never create catalog
+/// products directly; an admin approves the request (creating or linking a Product).
+model ProductRequest {
+  id             String               @id @default(uuid())
+  sellerId       String               @map("seller_id")
+  status         ProductRequestStatus @default(PENDING)
+  title          String
+  /// Free text: the brand may not exist yet
+  brandName      String?              @map("brand_name")
+  categoryId     String?              @map("category_id")
+  description    String?
+  /// EAN/UPC/GTIN printed on the pack, to spot duplicates
+  barcode        String?
+  /// Manufacturer or reference page
+  referenceUrl   String?              @map("reference_url")
+  /// [{ url, alt? }]
+  images         Json                 @default("[]")
+  specifications Json                 @default("{}")
+  weightKg       Decimal?             @map("weight_kg") @db.Decimal(8, 3)
+  /// Seller's note to the catalog team
+  note           String?
+  /// Set when APPROVED (new product) or DUPLICATE (existing product)
+  productId      String?              @map("product_id")
+  reviewNote     String?              @map("review_note")
+  reviewedBy     String?              @map("reviewed_by")
+  reviewedAt     DateTime?            @map("reviewed_at")
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+
+  seller   SellerProfile @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  category Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  product  Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([sellerId, createdAt])
+  @@map("product_requests")
+}
+
+// ─────────────────────────────────────────────
+// ZERO-WAREHOUSE MODEL: store branches, gig drivers, delivery jobs
+// ─────────────────────────────────────────────
+
+enum VehicleClass {
+  BIKE
+  CAR
+  BAKKIE
+}
+
+enum DropoffType {
+  ADDRESS
+  PICKUP_POINT
+}
+
+enum DeliveryJobStatus {
+  /// Created at checkout; the store is still accepting / packing
+  AWAITING_STORE
+  /// Packed and offered to nearby drivers
+  OPEN
+  /// A driver claimed it and locked collateral
+  CLAIMED
+  /// Store gave the driver the pickup PIN
+  IN_TRANSIT
+  /// Customer / pickup point gave the delivery OTP
+  DELIVERED
+  /// Could not be delivered; driver is taking it back to the store
+  RETURNING
+  RETURNED_TO_STORE
+  CANCELLED
+}
+
+enum DriverWalletEntryType {
+  FLOAT_DEPOSIT
+  FLOAT_WITHDRAWAL
+  /// Collateral moved from available to locked when a job is claimed
+  COLLATERAL_LOCK
+  /// Collateral moved back to available (prepaid delivery done, job returned or cancelled)
+  COLLATERAL_RELEASE
+  /// COD delivery: the driver keeps the cash, so the locked collateral is consumed
+  COD_OFFSET
+  DELIVERY_EARNING
+  EARNINGS_WITHDRAWAL
+  PENALTY
+  ADJUSTMENT
+}
+
+/// A physical store location that holds stock and packs orders
+model StoreBranch {
+  id                  String                                 @id @default(uuid())
+  sellerId            String                                 @map("seller_id")
+  /// Short code shown to drivers, e.g. HGH-AVD
+  code                String                                 @unique
+  name                String
+  cityId              String                                 @map("city_id")
+  suburbId            String?                                @map("suburb_id")
+  address             String
+  /// e.g. "Next to OK Mart, blue roof"
+  landmark            String?
+  lat                 Float
+  lng                 Float
+  /// Kept in sync with lat/lng by a trigger
+  geom                Unsupported("geography(Point, 4326)")?
+  phone               String?
+  /// Weekly hours in Africa/Harare time: { "mon": [["08:00","17:00"]], ..., "sun": [] }
+  operatingHours      Json                                   @default("{}") @map("operating_hours")
+  /// Temporarily not taking orders (stock count, power cut)
+  isPaused            Boolean                                @default(false) @map("is_paused")
+  defaultPrepTimeMins Int                                    @default(30) @map("default_prep_time_mins")
+  isActive            Boolean                                @default(true) @map("is_active")
+  /// Admin checked the map pin matches the shop (KYC)
+  locationVerifiedAt  DateTime?                              @map("location_verified_at")
+  createdAt           DateTime                               @default(now()) @map("created_at")
+  updatedAt           DateTime                               @updatedAt @map("updated_at")
+
+  seller       SellerProfile     @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  city         City              @relation(fields: [cityId], references: [id])
+  suburb       Suburb?           @relation(fields: [suburbId], references: [id], onDelete: SetNull)
+  offers       Offer[]
+  shipments    Shipment[]
+  deliveryJobs DeliveryJob[]
+  staff        User[]            @relation("BranchStaff")
+  orderEvents  StoreOrderEvent[]
+
+  @@index([sellerId])
+  @@index([cityId, isActive])
+  @@index([geom], type: Gist)
+  @@map("store_branches")
+}
+
+/// Customer fee and driver payout by straight-line distance and vehicle class
+/// Delivery zone within a city (e.g. Harare "Zone 1 Inner"); suburbs belong to one zone
+model PricingZone {
+  id        String   @id @default(uuid())
+  cityId    String   @map("city_id")
+  /// Short code, e.g. ZONE_1_INNER
+  code      String
+  name      String
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  city      City              @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  suburbs   Suburb[]
+  rulesFrom ZonePricingRule[] @relation("RuleOrigin")
+  rulesTo   ZonePricingRule[] @relation("RuleDestination")
+
+  @@unique([cityId, code])
+  @@map("pricing_zones")
+}
+
+/// Delivery price between two zones for a vehicle class. Looked up both ways (A→B also prices B→A
+/// unless B→A has its own rule). Fee = base + per-km × straight-line km. Wins over distance bands.
+model ZonePricingRule {
+  id                String       @id @default(uuid())
+  originZoneId      String       @map("origin_zone_id")
+  destinationZoneId String       @map("destination_zone_id")
+  vehicleClass      VehicleClass @map("vehicle_class")
+  customerFeeUsd    Decimal      @map("customer_fee_usd") @db.Decimal(12, 2)
+  driverPayoutUsd   Decimal      @map("driver_payout_usd") @db.Decimal(12, 2)
+  customerPerKmUsd  Decimal      @default(0) @map("customer_per_km_usd") @db.Decimal(8, 2)
+  driverPerKmUsd    Decimal      @default(0) @map("driver_per_km_usd") @db.Decimal(8, 2)
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  originZone      PricingZone @relation("RuleOrigin", fields: [originZoneId], references: [id], onDelete: Cascade)
+  destinationZone PricingZone @relation("RuleDestination", fields: [destinationZoneId], references: [id], onDelete: Cascade)
+
+  @@unique([originZoneId, destinationZoneId, vehicleClass])
+  @@map("zone_pricing_rules")
+}
+
+model DeliveryFeeBand {
+  id             String       @id @default(uuid())
+  vehicleClass   VehicleClass @map("vehicle_class")
+  /// Band covers distances up to and including this many km
+  maxKm          Decimal      @map("max_km") @db.Decimal(6, 2)
+  customerFeeUsd Decimal      @map("customer_fee_usd") @db.Decimal(12, 2)
+  driverFeeUsd   Decimal      @map("driver_fee_usd") @db.Decimal(12, 2)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@unique([vehicleClass, maxKm])
+  @@map("delivery_fee_bands")
+}
+
+model DriverProfile {
+  id                 String                                 @id @default(uuid())
+  userId             String                                 @unique @map("user_id")
+  nationalId         String                                 @map("national_id")
+  licenseNumber      String?                                @map("license_number")
+  licenseExpiry      DateTime?                              @map("license_expiry") @db.Date
+  vehicleClass       VehicleClass                           @map("vehicle_class")
+  vehicleReg         String?                                @map("vehicle_reg")
+  vehicleDescription String?                                @map("vehicle_description")
+  idDocUrl           String?                                @map("id_doc_url")
+  licenseDocUrl      String?                                @map("license_doc_url")
+  selfieUrl          String?                                @map("selfie_url")
+  /// Highest parcel value this driver may carry (set at approval; null = no cap beyond their float)
+  maxParcelValueUsd  Decimal?                               @map("max_parcel_value_usd") @db.Decimal(12, 2)
+  kycStatus          ApprovalStatus                         @default(PENDING) @map("kyc_status")
+  cityId             String?                                @map("city_id")
+  isOnline           Boolean                                @default(false) @map("is_online")
+  lat                Float?
+  lng                Float?
+  /// Kept in sync with lat/lng by a trigger
+  geom               Unsupported("geography(Point, 4326)")?
+  locationUpdatedAt  DateTime?                              @map("location_updated_at")
+  ratingAvg          Float                                  @default(0) @map("rating_avg")
+  ratingCount        Int                                    @default(0) @map("rating_count")
+  completedJobs      Int                                    @default(0) @map("completed_jobs")
+  approvedAt         DateTime?                              @map("approved_at")
+  approvedBy         String?                                @map("approved_by")
+  rejectionNote      String?                                @map("rejection_note")
+  createdAt          DateTime                               @default(now()) @map("created_at")
+  updatedAt          DateTime                               @updatedAt @map("updated_at")
+
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  city          City?               @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  wallet        DriverWallet?
+  walletEntries DriverWalletEntry[]
+  withdrawals   DriverWithdrawal[]
+  jobs          DeliveryJob[]
+
+  @@index([kycStatus])
+  @@index([isOnline, vehicleClass])
+  @@index([geom], type: Gist)
+  @@map("driver_profiles")
+}
+
+/// Driver collateral float and earnings. Balances can't go negative (CHECK constraints);
+/// every change is mirrored by a DriverWalletEntry.
+model DriverWallet {
+  driverId                String   @id @map("driver_id")
+  availableFloatUsd       Decimal  @default(0) @map("available_float_usd") @db.Decimal(12, 2)
+  lockedFloatUsd          Decimal  @default(0) @map("locked_float_usd") @db.Decimal(12, 2)
+  withdrawableEarningsUsd Decimal  @default(0) @map("withdrawable_earnings_usd") @db.Decimal(12, 2)
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  driver DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@map("driver_wallets")
+}
+
+/// Append-only record of driver wallet movements (UPDATE and DELETE blocked by a trigger)
+model DriverWalletEntry {
+  id                String                @id @default(uuid())
+  driverId          String                @map("driver_id")
+  type              DriverWalletEntryType
+  availableDeltaUsd Decimal               @default(0) @map("available_delta_usd") @db.Decimal(12, 2)
+  lockedDeltaUsd    Decimal               @default(0) @map("locked_delta_usd") @db.Decimal(12, 2)
+  earningsDeltaUsd  Decimal               @default(0) @map("earnings_delta_usd") @db.Decimal(12, 2)
+  /// Balances after this entry
+  availableAfterUsd Decimal               @map("available_after_usd") @db.Decimal(12, 2)
+  lockedAfterUsd    Decimal               @map("locked_after_usd") @db.Decimal(12, 2)
+  earningsAfterUsd  Decimal               @map("earnings_after_usd") @db.Decimal(12, 2)
+  deliveryJobId     String?               @map("delivery_job_id")
+  /// Payment / payout reference for deposits and withdrawals
+  reference         String?
+  memo              String?
+  createdById       String?               @map("created_by_id")
+  createdAt         DateTime              @default(now()) @map("created_at")
+
+  driver      DriverProfile @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  deliveryJob DeliveryJob?  @relation(fields: [deliveryJobId], references: [id], onDelete: Restrict)
+
+  @@index([driverId, createdAt])
+  @@index([deliveryJobId])
+  @@map("driver_wallet_entries")
+}
+
+/// One store-to-customer (or store-to-pickup-point) run for one shipment
+model DeliveryJob {
+  id                    String            @id @default(uuid())
+  /// e.g. DJ-KM7Q2M9X-1
+  reference             String            @unique
+  shipmentId            String            @unique @map("shipment_id")
+  pickupBranchId        String            @map("pickup_branch_id")
+  dropoffType           DropoffType       @map("dropoff_type")
+  pickupPointId         String?           @map("pickup_point_id")
+  /// Snapshot of the drop-off: { line1, suburb, city, landmark, instructions }
+  dropoffAddress        Json?             @map("dropoff_address")
+  dropoffLat            Float?            @map("dropoff_lat")
+  dropoffLng            Float?            @map("dropoff_lng")
+  recipientName         String            @map("recipient_name")
+  recipientPhone        String            @map("recipient_phone")
+  vehicleRequired       VehicleClass      @map("vehicle_required")
+  distanceKm            Decimal           @map("distance_km") @db.Decimal(6, 2)
+  customerFeeUsd        Decimal           @map("customer_fee_usd") @db.Decimal(12, 2)
+  driverFeeUsd          Decimal           @map("driver_fee_usd") @db.Decimal(12, 2)
+  /// Goods value the driver carries
+  parcelValueUsd        Decimal           @map("parcel_value_usd") @db.Decimal(12, 2)
+  /// Cash to collect at the door (0 for prepaid)
+  codAmountUsd          Decimal           @default(0) @map("cod_amount_usd") @db.Decimal(12, 2)
+  /// Float the driver must lock to claim: parcel value plus the settings buffer
+  collateralRequiredUsd Decimal           @map("collateral_required_usd") @db.Decimal(12, 2)
+  /// 4-digit PIN the store gives the driver at handover (hashed)
+  pickupPinHash         String?           @map("pickup_pin_hash")
+  /// 6-digit OTP the recipient gives the driver at drop-off (hashed)
+  deliveryOtpHash       String?           @map("delivery_otp_hash")
+  pinAttempts           Int               @default(0) @map("pin_attempts")
+  otpAttempts           Int               @default(0) @map("otp_attempts")
+  status                DeliveryJobStatus @default(AWAITING_STORE)
+  driverId              String?           @map("driver_id")
+  broadcastAt           DateTime?         @map("broadcast_at")
+  claimedAt             DateTime?         @map("claimed_at")
+  pickedUpAt            DateTime?         @map("picked_up_at")
+  deliveredAt           DateTime?         @map("delivered_at")
+  cancelledAt           DateTime?         @map("cancelled_at")
+  cancelReason          String?           @map("cancel_reason")
+  /// Driver could not hand over: NOT_HOME, REFUSED, WRONG_ADDRESS, OTHER
+  failReason            String?           @map("fail_reason")
+  failNote              String?           @map("fail_note")
+  failedAt              DateTime?         @map("failed_at")
+  /// Store confirmed it has the parcel back
+  returnedAt            DateTime?         @map("returned_at")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+
+  shipment      Shipment            @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  pickupBranch  StoreBranch         @relation(fields: [pickupBranchId], references: [id])
+  pickupPoint   PickupPoint?        @relation(fields: [pickupPointId], references: [id], onDelete: SetNull)
+  driver        DriverProfile?      @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  walletEntries DriverWalletEntry[]
+
+  @@index([status, vehicleRequired])
+  @@index([driverId, status])
+  @@index([pickupBranchId, status])
+  @@map("delivery_jobs")
+}
+
+enum StoreOrderEventType {
+  ACCEPTED
+  /// Packed and handed to the driver queue (onTime = by the packing deadline)
+  READY
+  /// Not accepted in time
+  TIMED_OUT
+  /// Store said it can't fill the order
+  OUT_OF_STOCK
+  /// Parcel moved here from another store
+  REASSIGNED_IN
+  /// An admin moved the parcel away from this store (no SLA penalty)
+  MOVED_BY_ADMIN
+}
+
+/// What each store did with each parcel. Drives the store's SLA score and survives reassignment.
+model StoreOrderEvent {
+  id         String              @id @default(uuid())
+  shipmentId String              @map("shipment_id")
+  sellerId   String              @map("seller_id")
+  branchId   String              @map("branch_id")
+  type       StoreOrderEventType
+  /// READY: packed by the deadline
+  onTime     Boolean?            @map("on_time")
+  note       String?
+  actorId    String?             @map("actor_id")
+  createdAt  DateTime            @default(now()) @map("created_at")
+
+  shipment Shipment      @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  seller   SellerProfile @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  branch   StoreBranch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([sellerId, createdAt])
+  @@index([shipmentId])
+  @@map("store_order_events")
+}
+
+enum DriverWalletBucket {
+  /// Collateral float (refundable deposit)
+  FLOAT
+  /// Delivery fees earned
+  EARNINGS
+}
+
+enum DriverWithdrawalStatus {
+  REQUESTED
+  PAID
+  REJECTED
+}
+
+/// A driver asking for float or earnings to be paid out. The amount leaves the wallet on request
+/// (so it can't be locked as collateral meanwhile) and comes back if rejected.
+model DriverWithdrawal {
+  id          String                 @id @default(uuid())
+  driverId    String                 @map("driver_id")
+  bucket      DriverWalletBucket
+  amountUsd   Decimal                @map("amount_usd") @db.Decimal(12, 2)
+  /// ECOCASH / INNBUCKS / BANK
+  method      String
+  /// e.g. { phone } or { bank, accountNumber }
+  destination Json
+  status      DriverWithdrawalStatus @default(REQUESTED)
+  externalRef String?                @map("external_ref")
+  note        String?
+  handledById String?                @map("handled_by_id")
+  handledAt   DateTime?              @map("handled_at")
+  createdAt   DateTime               @default(now()) @map("created_at")
+
+  driver DriverProfile @relation(fields: [driverId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt])
+  @@index([driverId, createdAt])
+  @@map("driver_withdrawals")
 }

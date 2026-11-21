@@ -8,11 +8,13 @@
  *  - 3 approved service providers (with Harare coordinates)
  *  - Service listings per provider
  *  - Emergency contacts (Zimbabwe)
+ *  - Marketplace: cities, hubs, pickup points, exchange rates, catalog, sellers, offers (seed-marketplace.ts)
  */
 
 import { PrismaClient, UserRole, UserStatus, ApprovalStatus, ServiceCategory } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
+import { seedMarketplace } from './seed-marketplace';
 
 dotenv.config();
 
@@ -300,11 +302,19 @@ async function main() {
   }
   console.log(`✅ Emergency contacts: ${emergencyContacts.length} seeded`);
 
+  // ── Marketplace ────────────────────────────────────────────
+  const productIds = await seedMarketplace(prisma, admin.id);
+  // Imported lazily so the app's env validation only runs once dotenv has loaded
+  const { buyBoxService } = await import('../src/modules/catalog/buybox.service');
+  await buyBoxService.recomputeProducts(productIds);
+  console.log('✅ Buy Box computed for all products');
+
   console.log('\n🎉 Seed complete!');
   console.log(`\nAdmin login: ${adminEmail} / ${adminPassword}`);
   console.log('Provider login: emmanuel.k@example.zw / Provider@1234!');
   console.log('User login:     amara.moyo@example.zw / User@1234!');
   console.log('Driver login:   tafadzwa.driver@example.zw / Driver@1234!');
+  console.log('Seller login:   seller.gadgets@example.zw / Seller@1234! (also byohome, mbare, borrowmart, chitown, mutare[pending])');
 }
 
 main()
@@ -314,4 +324,7 @@ main()
   })
   .finally(async () => {
     await prisma.$disconnect();
+    const { default: appPrisma } = await import('../src/lib/prisma');
+    await appPrisma.$disconnect();
+    process.exit(0);
   });

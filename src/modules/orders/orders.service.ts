@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { OrderStatus, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
-import { CONSTANTS } from '../../config/constants';
+import { currencyService, usdToZwg } from '../currency/currency.service';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { NotFoundError, ForbiddenError, BadRequestError, ConflictError } from '../../middleware/error.middleware';
@@ -48,6 +48,8 @@ export class OrdersService {
     }
 
     const checkoutRef = uuidv4();
+    // Informational ZiG total, at the admin-set rate in force right now
+    const zigRate = await currencyService.getUsdToZwg();
     const isCash = dto.paymentMethod === 'CASH';
 
     let orderIds: string[];
@@ -92,7 +94,7 @@ export class OrdersService {
               discount: fromCents(vendor.discountCents),
               totalAmount: total,
               commission: fromCents(vendor.commissionCents),
-              zigAmount: plan.currency === 'USD' ? total / CONSTANTS.ZIG_TO_USD_RATE : undefined,
+              zigAmount: plan.currency === 'USD' && zigRate ? usdToZwg(total, zigRate.rate) : undefined,
               paymentMethod: dto.paymentMethod,
               paymentPhone: dto.paymentPhone,
               promoCode: plan.promoCode,

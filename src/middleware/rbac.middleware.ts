@@ -23,4 +23,5 @@ export function requireRoles(...roles: UserRole[]) {
 /** Shorthand guards */
 export const requireAdmin = requireRoles(UserRole.ADMIN);
 export const requireProvider = requireRoles(UserRole.PROVIDER, UserRole.ADMIN);
-export const requireUser = requireRoles(UserRole.USER, UserRole.PROVIDER, UserRole.ADMIN);
+/** Anyone who can shop: sellers and hub staff buy too */
+export const requireUser = requireRoles(UserRole.USER, UserRole.PROVIDER, UserRole.SELLER, UserRole.WAREHOUSE, UserRole.ADMIN);

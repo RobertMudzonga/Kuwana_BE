@@ -16,6 +16,13 @@ export class AppError extends Error {
   }
 }
 
+/** 409 that carries structured details (e.g. which cart lines changed) in the response's `errors` */
+export class ConflictWithDetailsError extends AppError {
+  constructor(message: string, public details: unknown) {
+    super(message, 409);
+  }
+}
+
 export class NotFoundError extends AppError {
   constructor(resource = 'Resource') {
     super(`${resource} not found`, 404);
@@ -58,7 +65,7 @@ export function globalErrorHandler(
     if (!err.isOperational) {
       logger.error('Non-operational error', { err });
     }
-    errorResponse(res, err.message, err.statusCode);
+    errorResponse(res, err.message, err.statusCode, err instanceof ConflictWithDetailsError ? err.details : undefined);
     return;
   }
 

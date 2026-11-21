@@ -23,24 +23,30 @@ const FAILED_STATUSES = ['cancelled', 'failed', 'disputed', 'refunded'];
  */
 export class PaynowGateway implements IPaymentGateway {
   readonly name = 'PAYNOW' as const;
-  private integrationId = env.PAYNOW_INTEGRATION_ID ?? '';
-  private integrationKey = env.PAYNOW_INTEGRATION_KEY ?? '';
+  /** One integration per currency: Paynow settles USD and ZiG separately */
+  private integrations: Record<string, { id: string; key: string }> = {
+    USD: { id: env.PAYNOW_INTEGRATION_ID ?? '', key: env.PAYNOW_INTEGRATION_KEY ?? '' },
+    ZWG: { id: env.PAYNOW_ZWG_INTEGRATION_ID ?? '', key: env.PAYNOW_ZWG_INTEGRATION_KEY ?? '' },
+  };
 
   supports(method: PaymentMethod): boolean {
-    return method === 'ECOCASH' || method === 'ONEMONEY' || method === 'CARD';
+    return ['ECOCASH', 'ONEMONEY', 'INNBUCKS', 'ZIMSWITCH', 'CARD'].includes(method);
   }
 
-  private hash(fields: [string, string][]): string {
+  private hash(fields: [string, string][], key: string): string {
     const concatenated = fields.filter(([k]) => k.toLowerCase() !== 'hash').map(([, v]) => v).join('');
-    return crypto.createHash('sha512').update(concatenated + this.integrationKey, 'utf8').digest('hex').toUpperCase();
+    return crypto.createHash('sha512').update(concatenated + key, 'utf8').digest('hex').toUpperCase();
   }
 
-  /** Verify a message Paynow sent us (response, result callback or poll) */
+  /** Verify a message Paynow sent us (response, result callback or poll) against any configured integration */
   private verify(fields: [string, string][]): boolean {
     const received = fields.find(([k]) => k.toLowerCase() === 'hash')?.[1];
     if (!received) return false;
-    const expected = this.hash(fields);
-    return received.length === expected.length && crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
+    return Object.values(this.integrations).some(({ key }) => {
+      if (!key) return false;
+      const expected = this.hash(fields, key);
+      return received.length === expected.length && crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
+    });
   }
 
   private parse(body: string): [string, string][] {
@@ -61,15 +67,18 @@ export class PaynowGateway implements IPaymentGateway {
   }
 
   async initiatePayment(input: InitiatePaymentInput): Promise<InitiatePaymentResult> {
-    if (!this.integrationId || !this.integrationKey) {
-      throw new Error('Paynow is not configured (PAYNOW_INTEGRATION_ID / PAYNOW_INTEGRATION_KEY)');
+    const integration = this.integrations[input.currency.toUpperCase()];
+    if (!integration?.id || !integration.key) {
+      throw new Error(`Paynow is not configured for ${input.currency} payments`);
     }
     const resultUrl = env.PAYNOW_RESULT_URL ?? `${env.PUBLIC_API_URL}/api/${env.API_VERSION}/payments/paynow/result`;
     const returnUrl = env.PAYNOW_RETURN_URL ?? `${env.PUBLIC_API_URL}/api/${env.API_VERSION}/payments/return`;
-    const mobile = input.method === 'ECOCASH' || input.method === 'ONEMONEY';
+    // Express (on-phone) methods use remotetransaction; card and Zimswitch use the hosted web page
+    const expressMethod: Partial<Record<PaymentMethod, string>> = { ECOCASH: 'ecocash', ONEMONEY: 'onemoney', INNBUCKS: 'innbucks' };
+    const mobile = !!expressMethod[input.method];
 
     const fields: [string, string][] = [
-      ['id', this.integrationId],
+      ['id', integration.id],
       ['reference', input.paymentId],
       ['amount', input.amount.toFixed(2)],
       ['additionalinfo', input.description.slice(0, 200)],
@@ -81,10 +90,10 @@ export class PaynowGateway implements IPaymentGateway {
     if (mobile) {
       // Paynow expects the local format 07XXXXXXXX
       fields.push(['phone', (input.phone ?? '').replace(/^\+263/, '0')]);
-      fields.push(['method', input.method === 'ECOCASH' ? 'ecocash' : 'onemoney']);
+      fields.push(['method', expressMethod[input.method]!]);
     }
     fields.push(['status', 'Message']);
-    fields.push(['hash', this.hash(fields)]);
+    fields.push(['hash', this.hash(fields, integration.key)]);
 
     const url = `${PAYNOW_BASE}/${mobile ? 'remotetransaction' : 'initiatetransaction'}`;
     const { data } = await axios.post<string>(url, new URLSearchParams(fields).toString(), {
@@ -106,9 +115,11 @@ export class PaynowGateway implements IPaymentGateway {
       gatewayRef: input.paymentId,
       status: 'pending',
       redirectUrl: get('browserurl') || undefined,
-      instructions: mobile
-        ? get('instructions') || `Approve the ${input.method === 'ECOCASH' ? 'EcoCash' : 'OneMoney'} prompt on your phone to complete payment.`
-        : undefined,
+      instructions: input.method === 'INNBUCKS'
+        ? `Open InnBucks and enter authorisation code ${get('authorizationcode')} to pay.`
+        : mobile
+          ? get('instructions') || `Approve the ${input.method === 'ECOCASH' ? 'EcoCash' : 'OneMoney'} prompt on your phone to complete payment.`
+          : undefined,
       pollUrl: get('pollurl') || undefined,
     };
   }

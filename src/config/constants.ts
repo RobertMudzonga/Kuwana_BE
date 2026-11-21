@@ -16,8 +16,7 @@ export const CONSTANTS = {
   MAX_FILE_SIZE_BYTES: 5 * 1024 * 1024, // 5 MB
   ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/webp'],
 
-  // ZiG conversion (approximate — update via config for production)
-  ZIG_TO_USD_RATE: 0.0013, // 1 ZiG ≈ 0.0013 USD
+  // ZiG conversion: see modules/currency (admin-set rates in the exchange_rates table)
 
   // Roles
   ROLES: {
